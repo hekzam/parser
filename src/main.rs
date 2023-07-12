@@ -33,7 +33,7 @@ const IMG_FORM_DEFAULT: Pointers<f32> = Pointers {
 };
 
 const QR_SCALE: OriRect2D<f32> = OriRect2D {
-    angle: angle::Deg(0.),
+    angle: Deg(0.),
     rect: Rect_ {
         x: 18.88,
         y: 0.35,
@@ -67,7 +67,7 @@ const QR_SCALE: OriRect2D<f32> = OriRect2D {
 }*/
 
 /// Returns the relative scale difference
-fn scale<T: Float + Display>(size: &Size_<T>, relative: &Size_<T>) -> T {
+/*fn scale<T: Float + Display>(size: &Size_<T>, relative: &Size_<T>) -> T {
     let scale_threshold = T::from(1.1).expect("Unsupported type");
     let d_width = size.width / relative.width;
     let d_height = size.height / relative.height;
@@ -75,7 +75,7 @@ fn scale<T: Float + Display>(size: &Size_<T>, relative: &Size_<T>) -> T {
     assert!(d_width/d_height < scale_threshold && d_height/d_width < scale_threshold, "{}/{} and {}/{} differ by more than {}.", size.width, relative.width, size.height, relative.height, scale_threshold);
 
     return (d_height + d_width) / T::from(2.0).unwrap();
-}
+}*/
 
 fn disp_hist(hist: &Mat, maxh: i32, barw: i32) -> Result<()> {
     let imgs = Size_ {width: barw * 256, height: maxh};
@@ -155,7 +155,6 @@ fn main() -> Result<()> {
 
 
     // CM = DPCM / D
-    //todo
     let res = resol.cast().as_scale(&IMG_SIZE)?; //scale(&img.size()?.cast(), &IMG_SIZE);
     //let im_size = actual_size(RESOLUTION_DEFAULT, img.size()?.cast().cast());
     println!("res: {}", res);
@@ -228,7 +227,7 @@ fn main() -> Result<()> {
     let mut detector = SimpleBlobDetector::create(SimpleBlobDetector_Params { 
         threshold_step: 10.,
         min_threshold: 0.,
-        max_threshold: 120.,
+        max_threshold: 180.,
         min_repeatability: 2,
         min_dist_between_blobs: 0.1, // Markers will be on the corners, with a wide margin of error. however, we dont use it because the best detected blob may not be in the corners (if our markers are not very good..). //IMG_FORM_DEFAULT.width() * res * sz * 0.1
         filter_by_color: true,

@@ -1,1 +1,4 @@
 /target
+/*.jpg
+/files
+**.DS_Store

@@ -1,7 +1,6 @@
-use std::{collections::BTreeMap, f32::consts::PI, fmt::Debug, ops::Mul};
+use std::{collections::BTreeMap, f32::consts::PI, fmt::Debug, ops::{Mul, Sub}};
 
-use angle::{Angle, Deg, Rad};
-use num_traits::{float::Float, Num, NumCast, ToPrimitive};
+use num_traits::{float::Float, Num, NumCast, ToPrimitive, Zero};
 
 pub use opencv::core::{Point_, Rect_, Size_, VecN};
 use opencv::{core, objdetect, prelude::*, Result};
@@ -21,6 +20,66 @@ pub struct OriRect2D<T> {
     // In [0;360]
     pub angle: Deg<T>,
     pub rect: Rect_<T>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd)]
+pub struct Deg<T>(pub T);
+#[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd)]
+pub struct Rad<T>(pub T);
+
+const RAD_PER_DEG: f64 = std::f64::consts::PI / 180.;
+const DEG_PER_RAD: f64 = 180. / std::f64::consts::PI;
+
+/// A type that describes an agle
+pub trait Angle<T> {
+    /// The angle's value
+    fn value(&self) -> T;
+
+    fn sin(&self) -> T where T: Float;
+
+    fn cos(&self) -> T where T: Float;
+}
+impl<T: Clone> Angle<T> for Deg<T> {
+    fn value(&self) -> T {
+        self.0.clone()
+    }
+
+    fn sin(&self) -> T where T: Float {
+        self.value().sin()
+    }
+
+    fn cos(&self) -> T where T: Float {
+        self.value().cos()
+    }
+}
+impl<T: Clone> Angle<T> for Rad<T> {
+    fn value(&self) -> T {
+        self.0.clone()
+    }
+
+    fn sin(&self) -> T where T: Float {
+        self.value().sin()
+    }
+
+    fn cos(&self) -> T where T: Float {
+        self.value().cos()
+    }
+}
+impl<T: Clone + NumCast + Zero> From<Deg<T>> for Rad<T> {
+    fn from(value: Deg<T>) -> Self {
+        Rad(T::from(<f64 as NumCast>::from(value.value()).unwrap_or(f64::NAN) * RAD_PER_DEG).unwrap_or(T::zero()))
+    }
+}
+impl<T: Clone + NumCast + Zero> From<Rad<T>> for Deg<T> {
+    fn from(value: Rad<T>) -> Self {
+        Deg(T::from(<f64 as NumCast>::from(value.value()).unwrap_or(f64::NAN) * DEG_PER_RAD).unwrap_or(T::zero()))
+    }
+}
+impl<T: Sub<T, Output = T> + Clone> Sub<Deg<T>> for Deg<T> {
+    type Output = Deg<T>;
+    fn sub(self, rhs: Deg<T>) -> Self::Output {
+        Deg(self.value() - rhs.value())
+    }
 }
 
 /// Objects with this trait are able to describe some kind of rectangle
@@ -489,7 +548,7 @@ impl<T: Float> Sizable<Size_<T>> for Rect_<T> {
     }
     fn as_scale(&self, other: &Self) -> Result<Self::Scaler> {
         ShapeError::try_lin_scale(self.width / other.width, self.height / other.height)
-            .map_err(|_| opencv::Error::new(opencv::core::StsParseError, ""))
+            .map_err(|_| opencv::Error::new(opencv::core::StsParseError, "Scale error!"))
     }
 }
 impl<T: Mul<Output = T> + Copy> Resizable for Pointers<T> {

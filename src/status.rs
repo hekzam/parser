@@ -1,7 +1,6 @@
 use std::fmt::Debug;
 
-use num_traits::{float::Float};
-use angle::*;
+use num_traits::float::Float;
 
 use crate::utils::*;
 
