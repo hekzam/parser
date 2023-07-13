@@ -1,9 +1,11 @@
-use std::{env, fmt::Display, f32::consts::PI};
+use std::{env, fmt::Display, time, f32::consts::PI, path::PathBuf};
 
+use clap::Parser;
+use log::{debug, error, log_enabled, info, trace, warn, Level};
 use num_traits::float::Float;
 
 use opencv::{
-	core::{self, CV_8UC1},
+	core::{self, CV_8UC1, Code},
 	imgcodecs, imgproc,
 	prelude::*,
 	types, Result,
@@ -16,66 +18,65 @@ opencv::not_opencv_branch_4! {
 	use opencv::core::ACCESS_READ;
 }
 
+mod cli;
 mod utils;
 mod data;
 mod status;
 use utils::*;
 
-/// The document's default size (this information is user-defined (not found in any file, tho we could get it from typst, probs..))
-const IMG_SIZE: Size_<f32> = Size_ {width: 21.0, height: 29.7};
+/// Makes some platform checks
+fn boot_cl() -> Result<()> {
+    let opencl_have = core::have_opencl()?;
+	if opencl_have {
+		core::set_use_opencl(true)?;
+        if log_enabled!(Level::Info) {
+            // Platform information is cool, but not always useful
+            let mut platforms = types::VectorOfPlatformInfo::new();
+            core::get_platfoms_info(&mut platforms)?;
+            for (platf_num, platform) in platforms.into_iter().enumerate() {
+                info!("Platform #{}: {}", platf_num, platform.name()?);
+                for dev_num in 0..platform.device_number()? {
+                    let mut dev = core::Device::default();
+                    platform.get_device(&mut dev, dev_num)?;
+                    info!("  OpenCL device #{}: {}", dev_num, dev.name()?);
+                    info!("    vendor:  {}", dev.vendor_name()?);
+                    info!("    version: {}", dev.version()?);
+                }
+            }
+        }
+	}
+	let opencl_use = core::use_opencl()?;
+	info!(
+		"OpenCL is {} and {}",
+		if opencl_have {
+			"\x1b[32mavailable\x1b[39m"
+		} else {
+			"\x1b[31mnot available\x1b[39m"
+		},
+		if opencl_use {
+			"\x1b[32menabled\x1b[39m"
+		} else {
+			"\x1b[31mdisabled\x1b[39m"
+		},
+	);
 
-const POINTER_DIAMETER: f32 = 0.35;
-/// The default pointers. from the generated JSON
-const IMG_FORM_DEFAULT: Pointers<f32> = Pointers {
-    master: Point_ {x: 0.44, y: 29.08}, 
-    short: Point_ {x: 20.38, y: 29.08},
-    long: Point_ {x: 0.44, y: 0.44},
-};
-
-const QR_SCALE: OriRect2D<f32> = OriRect2D {
-    angle: Deg(0.),
-    rect: Rect_ {
-        x: 18.88,
-        y: 0.35,
-        width: 1.76,
-        height: 1.76,
+    match opencl_have && opencl_use  {
+        false => Err(opencv::Error::new(core::StsInternal, "Empty image from reading file.")),
+        true => Ok(())
     }
-};
+}
 
-/// Generates a new pixel size for a post-transformation image
-/// that tries to minimize the pixel waste (ie: generating new interpolated data or discarding existing data)
-/// 
-/// this function assumes minimal distortion (all values are relatively stable)
-/*fn match_resolution<T: Float>(from: Pointers<T>, to: Pointers<T>, resolution: Size_<T>) -> Size_<T> {
-    Size_ {
-        width: to.width() / from.width() * resolution.width, 
-        height: to.height() / from.height() * resolution.height,
+/// Write an image only useful when tracing
+fn image_trace(img: &Mat, name: &str) -> Result<bool> {
+    const TRACE_FOLDER: &str = "trace/";
+
+    if log_enabled!(Level::Trace) {
+        trace!("Written Image trace: {}", name);
+        imgcodecs::imwrite(&(TRACE_FOLDER.to_owned() + name), img, &core::Vector::default())
+    } else {
+        Ok(false)
     }
-}*/
-
-/// The answer square we want. from JSON
-//const BOX: Rect_<f32> = Rect_ {x: 2.5, y: 19.13, width: 0.35, height: 0.35};
-
-/// Resolve a position within a frame
-/*fn resolve(object: Rect_<f32>, image_actual: Size_<f32>, image_px: Size_<i32>) -> Rect_<i32> {
-    Rect_ {
-        x: (object.x / image_actual.width * (image_px.width as f32)) as i32, 
-        y: (object.y / image_actual.height * (image_px.height as f32)) as i32, 
-        width: (object.width  / image_actual.width * (image_px.width as f32)) as i32, 
-        height: (object.height / image_actual.height * (image_px.height as f32)) as i32,
-    }
-}*/
-
-/// Returns the relative scale difference
-/*fn scale<T: Float + Display>(size: &Size_<T>, relative: &Size_<T>) -> T {
-    let scale_threshold = T::from(1.1).expect("Unsupported type");
-    let d_width = size.width / relative.width;
-    let d_height = size.height / relative.height;
-
-    assert!(d_width/d_height < scale_threshold && d_height/d_width < scale_threshold, "{}/{} and {}/{} differ by more than {}.", size.width, relative.width, size.height, relative.height, scale_threshold);
-
-    return (d_height + d_width) / T::from(2.0).unwrap();
-}*/
+}
 
 fn disp_hist(hist: &Mat, maxh: i32, barw: i32) -> Result<()> {
     let imgs = Size_ {width: barw * 256, height: maxh};
@@ -93,46 +94,52 @@ fn disp_hist(hist: &Mat, maxh: i32, barw: i32) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
-	let img_file = env::args().nth(1).expect("Please supply image file name");
-	let opencl_have = core::have_opencl()?;
-	if opencl_have {
-		core::set_use_opencl(true)?;
-		let mut platforms = types::VectorOfPlatformInfo::new();
-		core::get_platfoms_info(&mut platforms)?;
-		for (platf_num, platform) in platforms.into_iter().enumerate() {
-			println!("Platform #{}: {}", platf_num, platform.name()?);
-			for dev_num in 0..platform.device_number()? {
-				let mut dev = core::Device::default();
-				platform.get_device(&mut dev, dev_num)?;
-				println!("  OpenCL device #{}: {}", dev_num, dev.name()?);
-				println!("    vendor:  {}", dev.vendor_name()?);
-				println!("    version: {}", dev.version()?);
-			}
-		}
-	}
-	let opencl_use = core::use_opencl()?;
-	println!(
-		"OpenCL is {} and {}",
-		if opencl_have {
-			"\x1b[32mavailable\x1b[39m"
-		} else {
-			"\x1b[31mnot available\x1b[39m"
-		},
-		if opencl_use {
-			"\x1b[32menabled\x1b[39m"
-		} else {
-			"\x1b[31mdisabled\x1b[39m"
-		},
-	);
-    let v: core::Vector<i32> = core::Vector::new();
-
-
+/// Reads an image from a file and applies a slight filter cleanup
+fn read_image(path: &str) -> Result<Mat> {
     // Get the image
-	let img = imgcodecs::imread(&img_file, imgcodecs::IMREAD_GRAYSCALE)?; //Open & convert to grayscale
-    println!("{:?}", img);
+	let img = imgcodecs::imread(&path, imgcodecs::IMREAD_GRAYSCALE)?; //Open & convert to grayscale
+    debug!("Image: {:?}", img);
+    if img.empty() {
+        error!("Empty image (searched at {})! This is likely because reading failed (ie: there was no file to read).", path);
+        return Err(opencv::Error::new(core::BadImageSize, "Empty image from reading file."));
+    }
     let resol: Size_<i32> = img.size()?;
 
+    //todo rescale image if too big?  (>600 dpi, probs) (to make the next operations less costly!)
+    if resol.width.max(resol.height) > 5000 {
+        warn!("Your image appears to be very big! ({} by {}) This could have an impact on performance!", resol.width, resol.height)
+    }
+    // Image cleanup
+    let mut dst = Mat::default();
+    // Clean the image (this one gives very good results!)
+    imgproc::bilateral_filter(&img, &mut dst, 5, 50., 50., core::BORDER_DEFAULT)?;
+    image_trace(&dst, "cleaned")?;
+    Ok(dst)
+}
+
+fn main() -> Result<()> {
+    // Active the logger (the default lever should not be higher than warn, as warnings should not be disregarded)
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
+
+	let args = cli::Cli::parse();
+
+    // Start opencl
+	boot_cl()?;
+
+    let v: core::Vector<i32> = core::Vector::new();
+
+	let start = time::Instant::now();
+
+    let ct = data::read(PathBuf::from(args.positions))?;
+
+    // Get the image
+	let image = read_image(&args.image)?;
+
+    let resol = image.size()?;
+
+    let res = resol.cast().as_scale(&ct.metadata.size)? as f32; //scale(&img.size()?.cast(), &IMG_SIZE);
+    //let im_size = actual_size(RESOLUTION_DEFAULT, img.size()?.cast().cast());
+    println!("res: {}", res);
     // Edge detection (find the little guys)
     /*let mut blurred = Mat::default();
 	imgproc::gaussian_blur(&img, &mut blurred, core::Size::new(7, 7), 0., 0., core::BORDER_DEFAULT)?;
@@ -152,16 +159,10 @@ fn main() -> Result<()> {
     let mut dr= Mat::zeros_size(img.size()?, core::CV_8UC3)?.to_mat()?;
     imgproc::draw_contours(&mut dr, &contours, -1, core::Scalar::new(255., 255., 255., 0.), 1, imgproc::LINE_8, &core::no_array(), i32::MAX, core::Point::default())?;
     imgcodecs::imwrite(&("cpu_contours-".to_owned() + &img_file), &dr, &v)?;*/
-
-
-    // CM = DPCM / D
-    let res = resol.cast().as_scale(&IMG_SIZE)?; //scale(&img.size()?.cast(), &IMG_SIZE);
-    //let im_size = actual_size(RESOLUTION_DEFAULT, img.size()?.cast().cast());
-    println!("res: {}", res);
-
+    
     // Detect QR:
     //todo! threshold pour eviter d'avoir des pbs de transparance (eheh trans-parance)
-    let (qr_pos, _) = detect_qr(&img)?;
+    let (qr_pos, _) = detect_qr(&image)?;
     //let mut qr = Mat::copy(&img)?;
     //imgproc::circle(&mut qr, qr_pos[0].cast(), 2, core::Scalar::from_array([0.0, 0.0, 0.0, 0.0]), 1, imgproc::LINE_4, 0)?;
     //imgproc::circle(&mut qr, qr_pos[1].cast(), 2, core::Scalar::from_array([0.0, 0.0, 0.0, 0.0]), 1, imgproc::LINE_4, 0)?;
@@ -176,10 +177,11 @@ fn main() -> Result<()> {
 
     let qr_pos = OriRect2D::try_from(qr_pos).unwrap(); // note: point error?
     println!("{:?}", qr_pos);
-    let sz = qr_pos.rect.as_scale(&QR_SCALE.rect).unwrap(); //todo hande the error better
+    let sz = qr_pos.rect.as_scale(&ct.qr_code.cast()).unwrap(); //todo hande the error better
     assert!(sz < 1.1 && 0.8 < sz, "Detected QR Code is too small or too big.");
 
-    let dotsize = sz * POINTER_DIAMETER; //todo add a pixel or two of border probsly.. and AA at the circle border
+    let pt: Pointers<f32> = ct.pointers.cast();
+    let dotsize: f32 = sz * pt.diameter; //todo add a pixel or two of border probsly.. and AA at the circle border
     let marker_radius = dotsize / 2. * res;
     /*
     let size = Size_ { width: dotsize, height: dotsize };
@@ -247,19 +249,19 @@ fn main() -> Result<()> {
         collect_contours: false,
     })?;
     let mut keyp: core::Vector<core::KeyPoint> = core::Vector::new();
-    detector.detect(&img, &mut keyp, &core::no_array())?;
+    detector.detect(&image, &mut keyp, &core::no_array())?;
     //Do a dichotomic search!!
     //let border = Point_::new(size.width/2, size.height/2).cast();
     let mut kp = Vec::new();
     for k in keyp { 
         let s = k.pt();
         println!("{:?} {:?}", s, k.size());
-        kp.push(s);
+        kp.push((s, k.size()));
     }
     // We hopefully have our points, now fit them!
     // We have to force it as an int, because f32 is not ord!
     // We rescale it because the cast may make us loose too much information
-    let actual_form = IMG_FORM_DEFAULT.rescale(res).as_computed::<i64>(&kp);
+    let actual_form = ct.pointers.cast().rescale(res).as_computed::<i64>(&kp);
     println!("{:?}", actual_form);
     // 👍👍👍
 
@@ -275,7 +277,7 @@ fn main() -> Result<()> {
     //println!("{:?}", resol);
 
     // Create a transform map to go from original image to fixed image
-    let a: [Point_<f32>; 3] = IMG_FORM_DEFAULT.rescale(res).into();
+    let a: [Point_<f32>; 3] = ct.pointers.cast().rescale(res).into();
     let b: [Point_<f32>; 3] = actual_form.into();
     //println!("{:?} {:?}", a, b);
     let scalemap = imgproc::get_affine_transform_slice(b.as_slice(), a.as_slice())?;
@@ -283,9 +285,8 @@ fn main() -> Result<()> {
 
     // Fix the image & write it
     let mut resized = Mat::default();
-    imgproc::warp_affine(&img, &mut resized, &scalemap, resol, imgproc::INTER_LINEAR, core::BORDER_CONSTANT, core::Scalar::default())?;
+    imgproc::warp_affine(&image, &mut resized, &scalemap, resol, imgproc::INTER_LINEAR, core::BORDER_CONSTANT, core::Scalar::default())?;
     imgcodecs::imwrite("FIXED.jpg", &resized, &v)?;
-
     // Crop the desired answer from the fixed image
     //let r = resolve(BOX, IMG_SIZE, resol);
     //let crop = Mat::roi(&resized, r)?;
@@ -319,5 +320,6 @@ fn main() -> Result<()> {
 		}
 		println!("{:#?}", start.elapsed());
 	}*/
+    println!("done! {:#?}", start.elapsed());
 	Ok(())
 }

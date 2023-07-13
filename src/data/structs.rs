@@ -1,48 +1,55 @@
+use std::collections::HashMap;
 
+use serde::Deserialize;
 
 type Float = f64;
-type Int = i64;
+type Int = u8;
 type Text = String;
 
 /// Position and general information about a document.
+#[derive(Deserialize, Debug)]
 pub struct Content {
-    q: Vec<Question>,
-    mk: Markers,
-    qr: Rectangle,
-    p: Meta,
+    pub q: HashMap<Text, Question>,
+    pub mk: Markers,
+    pub qr: Rectangle,
+    pub md: Meta,
 }
 
 /// Document metadata
-struct Meta {
-    w: Float,
-    h: Float,
-    n: Int,
+#[derive(Deserialize, Debug)]
+pub struct Meta {
+    pub id: Int,
+    pub hash: Vec<Int>,
+    pub w: Float,
+    pub h: Float,
+    pub n: Int,
 }
 /// Struct describing a rectangle
-struct Rectangle {
-    x: Float,
-    y: Float,
-    dx: Float,
-    dy: Float,
+#[derive(Deserialize, Debug)]
+pub struct Rectangle {
+    pub x: Float,
+    pub y: Float,
+    pub dx: Float,
+    pub dy: Float,
 }
 /// The markers on a document
-struct Markers {
-    m: Circle, 
-    l: Circle,
-    s: Circle,
+#[derive(Deserialize, Debug)]
+pub struct Markers {
+    pub d: Float,
+    pub m: Position, 
+    pub l: Position,
+    pub s: Position,
 }
-/// A circle!
-struct Circle {
-    x: Float,
-    y: Float,
-    d: Float,
+/// A position
+#[derive(Deserialize, Debug)]
+pub struct Position {
+    pub x: Float,
+    pub y: Float,
 }
 /// A question box
-struct Question {
-    id: Text,
-    p: Int,
-    x: Float,
-    y: Float,
-    dx: Float,
-    dy: Float,
+#[derive(Deserialize, Debug)]
+pub struct Question {
+    pub id: Text,
+    pub p: Int,
+    pub at: Rectangle,
 }

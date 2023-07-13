@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, f32::consts::PI, fmt::Debug, ops::{Mul, Sub}};
+use std::{collections::{BTreeMap, HashMap}, f32::consts::PI, fmt::Debug, ops::{Mul, Sub}};
 
 use num_traits::{float::Float, Num, NumCast, ToPrimitive, Zero};
 
@@ -17,10 +17,35 @@ pub struct QRData(Vec<u8>, u8);
 
 #[derive(Default, Copy, Clone, Debug)]
 pub struct OriRect2D<T> {
-    // In [0;360]
+    /// In [0;360]
     pub angle: Deg<T>,
     pub rect: Rect_<T>,
 }
+
+#[derive(Default, Clone, Debug)]
+pub struct Question_<T> {
+    pub id: String,
+    pub page: u8,
+    pub rect: Rect_<T>
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct Metadata_<T> {
+    pub id: u8,
+    pub hash: Vec<u8>,
+    pub size: Size_<T>,
+    /// The page count
+    pub pages: u8,
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct Content_<T> {
+    pub questions: HashMap<String, Question_<T>>,
+    pub pointers: Pointers<T>,
+    pub qr_code: Rect_<T>,
+    pub metadata: Metadata_<T>,
+}
+
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd)]
 pub struct Deg<T>(pub T);
@@ -287,8 +312,10 @@ impl<T: Float> OrientedOrthogonal for OriRect2D<T> {
 
 /// Pointers go by groups of 3, they only can express linear transformations.
 /// The actual positions should be the square's centers.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Pointers<T> {
+    /// The marker's width, optional
+    pub diameter: T,
     /// The master is the pointer between the two subordinates. It is the pointer closest to the other two, and is supposed to be at a right angle.
     pub master: Point_<T>,
     /// The short is the pointer closest to the master. It represents the paper's short side (NOTE: Paysage vs portrait?)
@@ -441,28 +468,22 @@ impl<T: ToPrimitive + Clone, U: NumCast + Clone> Castable<T, U> for Pointers<T> 
     type Target = Pointers<U>;
 
     fn unfold(&self) -> Vec<T> {
-        let mut r = Vec::new();
-        r.push(self.master.x.clone());
-        r.push(self.master.y.clone());
-        r.push(self.short.x.clone());
-        r.push(self.short.y.clone());
-        r.push(self.long.x.clone());
-        r.push(self.long.y.clone());
-        r
+        vec![self.diameter.clone(), self.master.x.clone(), self.master.y.clone(), self.short.x.clone(), self.short.y.clone(), self.long.x.clone(), self.long.y.clone()]
     }
     fn fold(&self, with: Vec<U>) -> Self::Target {
         Pointers {
+            diameter: with[0].clone(),
             master: Point_ {
-                x: with[0].clone(),
-                y: with[1].clone(),
+                x: with[1].clone(),
+                y: with[2].clone(),
             },
             short: Point_ {
-                x: with[2].clone(),
-                y: with[3].clone(),
+                x: with[3].clone(),
+                y: with[4].clone(),
             },
             long: Point_ {
-                x: with[4].clone(),
-                y: with[5].clone(),
+                x: with[5].clone(),
+                y: with[6].clone(),
             },
         }
     }
@@ -556,6 +577,7 @@ impl<T: Mul<Output = T> + Copy> Resizable for Pointers<T> {
 
     fn rescale(&self, scale: Self::Scaler) -> Self {
         Pointers {
+            diameter: self.diameter.clone() * scale.clone(),
             master: Point_ {
                 x: self.master.x.clone() * scale.clone(),
                 y: self.master.y.clone() * scale.clone(),
@@ -597,18 +619,20 @@ impl<T: Resizable<V, Scaler = U>, U: Clone, V: Clone> Resizable<V> for Vec<T> {
 impl<T: Float + Default> Pointers<T> {
     pub fn as_computed<V: Ord + NumCast + ToPrimitive + Copy>(
         &self,
-        value: &Vec<Point_<T>>,
+        value: &Vec<(Point_<T>, T)>,
     ) -> Self {
         // For now this simple implementation should work
         let mut value = value.clone();
         let px: [Point_<T>; 3] = self.into();
         let mut res = [Point_::default(); 3];
 
+        //todo: diameter checks
+        let mut d = T::from(0.).unwrap();
         for p in 0..3 {
             // Rank every possible point against the expected position (ie: the best choice is the nearest)
             let mut rankings = BTreeMap::new();
             for a in 0..value.len() {
-                let d = px[p].distance(&value[a]);
+                let d = px[p].distance(&value[a].0);
                 // We have to cast here, because there is no primitive both float and ord
                 rankings.insert(V::from(d).unwrap(), (a, d));
             }
@@ -618,9 +642,12 @@ impl<T: Float + Default> Pointers<T> {
             if !rankings.is_empty() {
                 assert!(rankings.first_key_value().unwrap().1 .1 / r.1 .1 > T::from(2.).unwrap());
             }
-            res[p] = value.remove(r.1 .0);
+            let (v, dv) = value.remove(r.1 .0);
+            res[p] = v;
+            d = d + (dv / T::from(3.).unwrap());
         }
         Pointers {
+            diameter: d,
             master: res[0],
             short: res[1],
             long: res[2],
@@ -650,7 +677,7 @@ pub fn detect_qr(img: &Mat) -> Result<(QRDelimitor, QRData)> {
 
     let mut pt = Mat::default();
     let data = detector.detect_and_decode(img, &mut pt, &mut core::no_array())?;
-
+    println!("{}", pt.empty());
     Ok((
         pt.data_typed()?.to_owned().into(),
         data.try_into()
