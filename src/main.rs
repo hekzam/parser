@@ -1,11 +1,10 @@
-use std::{env, fmt::Display, time, f32::consts::PI, path::PathBuf};
+use std::{time, f32::consts::PI, path::PathBuf};
 
 use clap::Parser;
 use log::{debug, error, log_enabled, info, trace, warn, Level};
-use num_traits::float::Float;
 
 use opencv::{
-	core::{self, CV_8UC1, Code},
+	core::{self, CV_8UC1},
 	imgcodecs, imgproc,
 	prelude::*,
 	types, Result,
@@ -118,7 +117,8 @@ fn read_image(path: &str) -> Result<Mat> {
 }
 
 fn main() -> Result<()> {
-    // Active the logger (the default lever should not be higher than warn, as warnings should not be disregarded)
+
+    // Activate the logger (the default lever should not be higher than warn, as warnings should not be disregarded)
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
 
 	let args = cli::Cli::parse();
@@ -126,9 +126,9 @@ fn main() -> Result<()> {
     // Start opencl
 	boot_cl()?;
 
-    let v: core::Vector<i32> = core::Vector::new();
+    let start = time::Instant::now();
 
-	let start = time::Instant::now();
+    let v: core::Vector<i32> = core::Vector::new();
 
     let ct = data::read(PathBuf::from(args.positions))?;
 

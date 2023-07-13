@@ -1,0 +1,11 @@
+On macOS you're getting the dyld: Library not loaded: @rpath/libclang.dylib error during the build process.
+
+OS can't find libclang.dylib dynamic library because it resides in a non-standard path, set up the DYLD_FALLBACK_LIBRARY_PATH environment variable to point to the path where libclang.dylib can be found, e.g. for Command Line Tools:
+
+export DYLD_FALLBACK_LIBRARY_PATH="$(xcode-select --print-path)/usr/lib/"
+
+or XCode:
+
+export DYLD_FALLBACK_LIBRARY_PATH="$(xcode-select --print-path)/Toolchains/XcodeDefault.xctoolchain/usr/lib/"
+
+You might be running into the issue on the recent macOS versions where this environment variable remains empty after setting, please check https://github.com/twistedfall/opencv-rust/issues/343 for some workarounds.
