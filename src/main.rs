@@ -1,4 +1,4 @@
-use std::{time, f32::consts::PI, path::PathBuf};
+use std::{time, f32::consts::PI, path::PathBuf, fmt::Write};
 
 use clap::Parser;
 use log::{debug, error, log_enabled, info, trace, warn, Level};
@@ -23,6 +23,11 @@ mod data;
 mod status;
 use utils::*;
 
+use crate::status::ShapeError;
+/*
+ * Convenience Functions *
+ not *just* for convenience, but mostly so
+*/
 /// Makes some platform checks
 fn boot_cl() -> Result<()> {
     let opencl_have = core::have_opencl()?;
@@ -48,14 +53,14 @@ fn boot_cl() -> Result<()> {
 	info!(
 		"OpenCL is {} and {}",
 		if opencl_have {
-			"\x1b[32mavailable\x1b[39m"
+			"available"
 		} else {
-			"\x1b[31mnot available\x1b[39m"
+			"not available"
 		},
 		if opencl_use {
-			"\x1b[32menabled\x1b[39m"
+			"enabled"
 		} else {
-			"\x1b[31mdisabled\x1b[39m"
+			"disabled"
 		},
 	);
 
@@ -68,15 +73,22 @@ fn boot_cl() -> Result<()> {
 /// Write an image only useful when tracing
 fn image_trace(img: &Mat, name: &str) -> Result<bool> {
     const TRACE_FOLDER: &str = "trace/";
+    const TRACE_EXTENSION: &str = ".jpg";
 
     if log_enabled!(Level::Trace) {
-        trace!("Written Image trace: {}", name);
-        imgcodecs::imwrite(&(TRACE_FOLDER.to_owned() + name), img, &core::Vector::default())
+        let fname = TRACE_FOLDER.to_owned() + name + TRACE_EXTENSION;
+        trace!("Writing image trace: \"{}\"", fname);
+        imgcodecs::imwrite(&fname, img, &core::Vector::default())
     } else {
         Ok(false)
     }
 }
 
+/*
+ * Display Functions *
+ just pretty stuff that can often be useful
+*/
+/// Display a histogram as a bar chart
 fn disp_hist(hist: &Mat, maxh: i32, barw: i32) -> Result<()> {
     let imgs = Size_ {width: barw * 256, height: maxh};
     let mut img = Mat::new_size_with_default(imgs, CV_8UC1, core::Scalar::default())?;
@@ -93,11 +105,54 @@ fn disp_hist(hist: &Mat, maxh: i32, barw: i32) -> Result<()> {
     Ok(())
 }
 
+/// Returns a string describing an image
+fn image_description_string(img: &Mat) -> Result<String> {
+    let f = |e: std::fmt::Error| opencv::Error::new(core::StsError, e.to_string());
+    let mut r = String::new();
+
+    let sz = img.size()?;
+    let chn = match img.channels() {
+        1 => "gray",
+        3 => "rgb",
+        4 => "rgba",
+        _ => "unknown"
+    };
+    let de = match img.depth() {
+        core::CV_8U => "8 bits",
+        core::CV_8S => "8 bits (signed)",
+        core::CV_16U => "16 bits",
+        core::CV_16S => "16 bits (signed)",
+        core::CV_32S => "32 bits (signed)",
+        core::CV_32F => "floating (32)",
+        core::CV_64F => "floating (64)",
+        _ => "unknown"
+    };
+    write!(&mut r, "image({}x{}, {} {})", sz.width, sz.height, chn, de).map_err(f)?;
+    Ok(r)
+}
+
+/// Returs a string describing a hash
+fn pretty_hash(hash: Vec<u8>) -> Result<String> {
+    let f = |e: std::fmt::Error| opencv::Error::new(core::StsError, e.to_string());
+
+    let mut r = String::new();
+    for v in hash {
+        write!(&mut r, "{:x}",v).map_err(f)?;
+    }
+
+    Ok(r)
+}
+
+/*
+ * Core functions *
+ the collection of them makes up the bulk of the app
+*/
 /// Reads an image from a file and applies a slight filter cleanup
 fn read_image(path: &str) -> Result<Mat> {
     // Get the image
-	let img = imgcodecs::imread(&path, imgcodecs::IMREAD_GRAYSCALE)?; //Open & convert to grayscale
-    debug!("Image: {:?}", img);
+    debug!("Reading image at: \"{}\"", path);
+	let img = imgcodecs::imread(&path, imgcodecs::IMREAD_ANYCOLOR)?; //Open & convert to grayscale
+    debug!("Image: {}", image_description_string(&img)?);
     if img.empty() {
         error!("Empty image (searched at {})! This is likely because reading failed (ie: there was no file to read).", path);
         return Err(opencv::Error::new(core::BadImageSize, "Empty image from reading file."));
@@ -114,6 +169,52 @@ fn read_image(path: &str) -> Result<Mat> {
     imgproc::bilateral_filter(&img, &mut dst, 5, 50., 50., core::BORDER_DEFAULT)?;
     image_trace(&dst, "cleaned")?;
     Ok(dst)
+}
+
+fn standard_size(image: &Mat, standard: &Size_<f32>) -> Result<f32> {
+    let resol = image.size()?;
+
+    let res = resol.cast().as_scale(&standard)?;
+
+    debug!("Resolution: {} px/cm", res);
+
+    Ok(res)
+}
+
+/// Detects, decodes, and checks a QR code
+/// TODO
+fn check_qr(image: &Mat, res: f32, standard_qr: Rect_<f32>, meta: Metadata_<f32>) -> Result<(OriRect2D<f32>, QRData)> {
+    const LEN_DX: f32 = ShapeError::LENGTH_THRESHOLD as f32;
+    // Detect QR:
+    //todo! threshold pour eviter d'avoir des pbs de transparance (eheh trans-parance)
+    let qr = detect_qr(&image)?;
+
+    let qr_pos: Vec<Point_<f32>> = qr.0.into_iter()
+        .map(|v| v.rescale(1. / res))
+        .collect();
+
+    let qr_pos = OriRect2D::try_from(qr_pos).unwrap(); // note: point error?
+    println!("QR Position{:?}", qr_pos);
+    let sz = qr_pos.rect.as_scale(&standard_qr.cast()).unwrap(); //todo hande the error better
+    if sz > LEN_DX || sz < 1. / LEN_DX {
+        warn!("Detected QR Code is too {}.", if sz > LEN_DX { "big" } else { "small" });
+    }
+
+    debug!("QR Data: {:?}", qr.1);
+    if meta.hash != qr.1.hash {
+        error!("Detected QR Code has hash {}, expected {}", pretty_hash(qr.1.hash)?, pretty_hash(meta.hash)?);
+        return Err(opencv::Error::new(core::StsBadArg, "Invalid QR Code data."));
+    }
+    if meta.id != qr.1.id {
+        error!("Detected QR Code has exam ID {}, expected {}", qr.1.id, meta.id);
+        return Err(opencv::Error::new(core::StsBadArg, "Invalid QR Code data."));
+    }
+    if meta.pages < qr.1.page || qr.1.page == 0 {
+        error!("Detected QR Code has page number {}, not in [1;{}]", qr.1.page, meta.pages);
+        return Err(opencv::Error::new(core::StsBadArg, "Invalid QR Code data."));
+    }
+
+    Ok((qr_pos, qr.1))
 }
 
 fn main() -> Result<()> {
@@ -135,11 +236,8 @@ fn main() -> Result<()> {
     // Get the image
 	let image = read_image(&args.image)?;
 
-    let resol = image.size()?;
 
-    let res = resol.cast().as_scale(&ct.metadata.size)? as f32; //scale(&img.size()?.cast(), &IMG_SIZE);
-    //let im_size = actual_size(RESOLUTION_DEFAULT, img.size()?.cast().cast());
-    println!("res: {}", res);
+    let res = standard_size(&image, &ct.metadata.size.cast())?;
     // Edge detection (find the little guys)
     /*let mut blurred = Mat::default();
 	imgproc::gaussian_blur(&img, &mut blurred, core::Size::new(7, 7), 0., 0., core::BORDER_DEFAULT)?;
@@ -285,7 +383,7 @@ fn main() -> Result<()> {
 
     // Fix the image & write it
     let mut resized = Mat::default();
-    imgproc::warp_affine(&image, &mut resized, &scalemap, resol, imgproc::INTER_LINEAR, core::BORDER_CONSTANT, core::Scalar::default())?;
+    imgproc::warp_affine(&image, &mut resized, &scalemap, image.size()?, imgproc::INTER_LINEAR, core::BORDER_CONSTANT, core::Scalar::default())?;
     imgcodecs::imwrite("FIXED.jpg", &resized, &v)?;
     // Crop the desired answer from the fixed image
     //let r = resolve(BOX, IMG_SIZE, resol);

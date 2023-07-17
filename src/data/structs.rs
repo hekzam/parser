@@ -8,6 +8,14 @@ type Text = String;
 
 /// Position and general information about a document.
 #[derive(Deserialize, Debug)]
+pub enum Kind {
+    Binary,
+    Numeric,
+    Text,
+}
+
+/// Position and general information about a document.
+#[derive(Deserialize, Debug)]
 pub struct Content {
     pub q: HashMap<Text, Question>,
     pub mk: Markers,
@@ -49,7 +57,7 @@ pub struct Position {
 /// A question box
 #[derive(Deserialize, Debug)]
 pub struct Question {
-    pub id: Text,
+    pub t: Kind,
     pub p: Int,
     pub at: Rectangle,
 }

@@ -1,4 +1,5 @@
 /target
 /*.jpg
 /files
+/trace
 **.DS_Store

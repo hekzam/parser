@@ -13,7 +13,12 @@ fn euclidean_distance<T: Float>(from: &Point_<T>, to: &Point_<T>) -> T {
 
 pub type QRDelimitor = Vec<Point_<f32>>;
 #[derive(Debug)]
-pub struct QRData(Vec<u8>, u8);
+/// Hash, exam ID, and page number
+pub struct QRData {
+    pub hash: Vec<u8>, 
+    pub id: u8,
+    pub page: u8
+}
 
 #[derive(Default, Copy, Clone, Debug)]
 pub struct OriRect2D<T> {
@@ -657,8 +662,9 @@ impl<T: Float + Default> Pointers<T> {
 impl TryFrom<Vec<u8>> for QRData {
     type Error = ();
     fn try_from(mut value: Vec<u8>) -> std::result::Result<Self, Self::Error> {
+        let exid = value.pop().ok_or(())?;
         let page = value.pop().ok_or(())?;
-        Ok(QRData(value, page))
+        Ok(QRData{hash:value, id:exid, page:page})
     }
 }
 
@@ -673,7 +679,7 @@ impl TryFrom<QRDelimitor> for OriRect2D<f32> {
 
 /// Detects and decode a qr code
 pub fn detect_qr(img: &Mat) -> Result<(QRDelimitor, QRData)> {
-    let mut detector = objdetect::QRCodeDetector::default()?;
+    let detector = objdetect::QRCodeDetector::default()?;
 
     let mut pt = Mat::default();
     let data = detector.detect_and_decode(img, &mut pt, &mut core::no_array())?;

@@ -35,7 +35,7 @@ impl From<Markers> for Pointers<f64> {
 impl From<Question> for Question_<f64> {
     fn from(value: Question) -> Self {
         Question_ {
-            id: value.id,
+            id: "string".to_owned(),
             page: value.p,
             rect: value.at.into()
         }
