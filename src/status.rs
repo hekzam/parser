@@ -39,7 +39,7 @@ impl ShapeError {
 
     /// Compares angle to a standard right angle
     pub fn try_right_angle<T: Angle<U> + From<Deg<U>> + Copy, U: Float>(value: T) -> ShapeResult<T> {
-        // Float to float should never fail (something something famous last words..)
+        // Float to float is safe
         let right_angle = T::from(Deg(U::from(90.0).unwrap()));
 
         match ShapeError::is_angle(&value, &right_angle) {
@@ -140,11 +140,14 @@ impl ShapeError {
         Ok(OriRect2D::new(rot, size, pos))
     }
 
+    /// Returns wether or not the described size is square
     pub fn is_square<T: Float>(height: T, width: T) -> bool {
+        // Float conversions never fail
         let sctr = T::from(Self::LENGTH_THRESHOLD).unwrap();
         width/height < sctr && height/width < sctr
     }
 
+    /// Tries to fit a 2D scale difference into a linear scale (square)
     pub fn try_lin_scale<T: Float>(dx: T, dy: T) -> ShapeResult<T> {
         match Self::is_square(dx, dy) {
             true => Ok((dx + dy) / T::from(2.0).unwrap()),

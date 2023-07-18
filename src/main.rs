@@ -307,6 +307,9 @@ fn disp_hist_serie(hist_series: &mut HistSeries, imgsource: &Mat, histogram: &Ma
     let height = hist_series.1[2];
     let barw = hist_series.1[3];
     let i = hist_series.1.get_mut(0).unwrap();
+    if *i >= count {
+        return Err(opencv::Error::new(core::StsBadSize, "Histogram buffer is already full, tried to add too many!"));
+    }
     // We make a clip of the area to write to
     let mut imgs_clip = Mat::roi(&hist_series.0, Rect_ { x: 0, y: *i * height, width: height, height })?;
 
