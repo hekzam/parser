@@ -1,4 +1,4 @@
-use std::{collections::HashMap, f32::consts::PI, fmt::Write, path::PathBuf, time, ops::{Add, AddAssign}};
+use std::{collections::HashMap, f32::consts::PI, fmt::Write, path::PathBuf, time, ops::AddAssign};
 
 use clap::Parser;
 use log::{debug, error, info, log_enabled, trace, warn, Level};
@@ -380,7 +380,7 @@ fn check_qr<T>(
     let qr_pos: Vec<Point_<f32>> = qr.0.into_iter().map(|v| v.rescale(1. / res)).collect();
 
     let qr_pos = OriRect2D::try_from(qr_pos).unwrap(); // note: point error?
-    debug!("QR Position{:?}", qr_pos);
+    debug!("QR Position: {} deg({:.2})", rect_description(&qr_pos.rect)?, qr_pos.angle.value());
     let sz = qr_pos.rect.as_scale(&standard_qr.cast()).unwrap(); //todo hande the error better
     if sz > LEN_DX || sz < 1. / LEN_DX {
         warn!(
@@ -427,16 +427,20 @@ fn check_qr<T>(
 /// Detects markers within an image
 fn detect_markers(
     image: &Mat,
-    qr_sz: f32,
+    actual_qr: &(OriRect2D<f32>, QRData),
+    standard_qr: &Rect_<f32>,
     standard_markers: &Pointers<f32>,
 ) -> Result<Pointers<f32>> {
     const LEN_DX: f32 = ShapeError::LENGTH_THRESHOLD as f32;
 
     // Either lower the size range (its 20% right now!), or we dont need sz :)
-    let dotsize: f32 = qr_sz * standard_markers.diameter;
+    let sz = actual_qr.0.rect.as_scale(standard_qr).unwrap();
+    let dotsize: f32 = sz * standard_markers.diameter;
     let marker_radius = dotsize / 2.;
 
     // Now we find the 3 lowest blobs!
+    // We only use a blob detector. It may be wise to cross-reference blob detection and template matching, to ensure better detection (removing some false positives, and maybe allowing us to lower our thresholds on critical parts, removing some false negatives?).
+    // Template matching would be used as: for each matched blob, look at the template matched buffer, and check that we have a prositive result from it.
     let size_mul = (1. / LEN_DX, LEN_DX);
     let mut detector = SimpleBlobDetector::create(SimpleBlobDetector_Params {
         threshold_step: 10.,
@@ -450,7 +454,7 @@ fn detect_markers(
         min_area: (marker_radius * size_mul.0).powi(2) * PI, // Filter for the right marker size, we can afford to be sensitive here.
         max_area: (marker_radius * size_mul.1).powi(2) * PI,
         filter_by_circularity: true,
-        min_circularity: 0.85, // Filter for circular markers
+        min_circularity: 0.8, // Filter for circular markers
         max_circularity: f32::MAX,
         filter_by_inertia: true,
         min_inertia_ratio: 0.6, //I have no idea what inertia is.
@@ -469,14 +473,17 @@ fn detect_markers(
         trace!("point(@{}:{}, ø{})", s.x.round(), s.y.round(), k.size());
         kp.push((s, k.size()));
     }
+    // We use the rotation information from our qr code to rotate the standard markers (and thus, provide a rotation-aware fitting)
+    // Right now we do need the qr code. IDEALLY, we would be able to do some minimal rotation detection even without, i think.
+    let center = image.size()?.cast().rescale(0.5).into();
+    let rotated_markers = standard_markers.rotate(actual_qr.0.angle, center);
+
     // We hopefully have our points, now fit them!
     // We have to force it as an int, because f32 is not ord!
     // We rescale it because the cast may make us loose too much information
-    let actual_form = standard_markers.as_computed::<i64>(&kp);
-    debug!(
-        "standard: {}",
-        markers_description_string(&standard_markers)?
-    );
+    let actual_form = rotated_markers.as_computed::<i64>(&kp);
+    debug!("standard: {}", markers_description_string(&standard_markers)?);
+    debug!("rotated:  {}", markers_description_string(&rotated_markers)?);
     debug!("actual:   {}", markers_description_string(&actual_form)?);
     Ok(actual_form)
 }
@@ -493,7 +500,7 @@ fn fix_image(
     let size_a = Size_::try_from(standard_markers.to_owned()).map_err(f)?;
     let size_b = Size_::try_from(actual_markers.to_owned()).map_err(f)?;
     let new_scale: f32 = size_a.as_scale(&size_b)?;
-    let new_res: Size_<i32> = image.size()?.cast().rescale(new_scale).cast();
+    //let new_res: Size_<i32> = image.size()?.cast().rescale(new_scale).cast();
     // Now that we have the new res, we do the inverse scale transform (which transforms our points as to ensure the resize element of the transform is 1)!
     //todo
     debug!("Rescale by a factor of: {}", new_scale);
@@ -660,10 +667,7 @@ fn main() -> Result<()> {
     //todo! threshold pour eviter d'avoir des pbs de transparance (eheh trans-parance)
     let qr = check_qr(&image, res, &ct.qr_code.cast(), &ct.metadata)?;
 
-    // The size differrence between expected and actual sizes
-    let sz = qr.0.rect.as_scale(&ct.qr_code.cast()).unwrap(); //todo hande the error better
-
-    let markers = detect_markers(&image, sz, &ct.pointers.cast().rescale(res))?;
+    let markers = detect_markers(&image, &qr, &ct.qr_code.cast(), &ct.pointers.cast().rescale(res))?;
 
     /*
     let size = Size_ { width: dotsize, height: dotsize };
@@ -696,14 +700,6 @@ fn main() -> Result<()> {
     let mut marker_disp = Mat::default();
     core::normalize(&markersdct, &mut marker_disp, 0., 255., core::NORM_MINMAX, core::CV_8UC1, &core::no_array())?;
     */
-    // Calculate a hist to see how everythin' is distributed
-    //let mut himg: core::Vector<Mat> = core::Vector::new();
-    //himg.push(marker_disp.clone());
-    //let mut hist = Mat::new_nd_with_default(&[256], core::CV_32FC1, core::Scalar::default())?;
-    //imgproc::calc_hist(&himg, &core::Vector::from(vec![0]), &core::no_array(), &mut hist, &core::Vector::from(vec![256]), &core::Vector::new(), false)?;
-    //disp_hist(&hist, 200, 2)?;
-
-    //imgcodecs::imwrite("GAY-SEX.jpg", &marker_disp, &v)?;
     // 👍👍
 
     // 👍👍👍
@@ -711,13 +707,6 @@ fn main() -> Result<()> {
     let resized = fix_image(&image, &ct.pointers.cast().rescale(res), &markers)?;
 
     resolve_boxes(&resized, &ct.questions, qr.1.page, res)?;
-
-    // Crop the desired answer from the fixed image
-    //let r = resolve(BOX, IMG_SIZE, resol);
-    //let crop = Mat::roi(&resized, r)?;
-    //let mut crop = Mat::copy(&resized)?;
-    //imgproc::rectangle(&mut crop, r, core::Scalar::from_array([0.0, 255.0, 255.0, 0.0]), 5, imgproc::LINE_8, 0)?;
-    //imgcodecs::imwrite(&("cpu_crop_fixed-".to_owned() + &img_file), &crop, &v)?;
 
     info!("Done: {:#?}", start.elapsed());
     Ok(())

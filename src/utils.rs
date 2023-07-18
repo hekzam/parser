@@ -1,6 +1,6 @@
-use std::{collections::{BTreeMap, HashMap}, f32::consts::PI, fmt::Debug, ops::{Mul, Sub}};
+use std::{collections::{BTreeMap, HashMap}, f32::consts::PI, fmt::Debug, ops::{Mul, Sub, Add}};
 
-use num_traits::{float::Float, Num, NumCast, ToPrimitive, Zero};
+use num_traits::{float::Float, Num, NumCast, ToPrimitive};
 
 pub use opencv::core::{Point_, Rect_, Size_, VecN};
 use opencv::{core, objdetect, prelude::*, Result};
@@ -66,55 +66,107 @@ pub struct Rad<T>(pub T);
 const RAD_PER_DEG: f64 = std::f64::consts::PI / 180.;
 const DEG_PER_RAD: f64 = 180. / std::f64::consts::PI;
 
-/// A type that describes an agle
-pub trait Angle<T> {
+/// A type that describes an angle. Bascially a periodic value from 0 to Self::circle
+pub trait Angle<T: Float> where Self: Sized {
+    /// The angle value associated with a full circle. 2PI for radians, 360 for degrees
+    const CIRCLE: f64 = 1.;
     /// The angle's value
     fn value(&self) -> T;
 
-    fn sin(&self) -> T where T: Float;
+    /// Create a new angle from the value
+    fn new(value: T) -> Self;
 
-    fn cos(&self) -> T where T: Float;
+    fn sin(&self) -> T {
+        (self.to_portion() * T::from(PI * 2.).unwrap()).sin()
+    }
+
+    fn cos(&self) -> T {
+        (self.to_portion() * T::from(PI * 2.).unwrap()).cos()
+    }
+
+    /// Returns the absolute value of an angle. This method is not conservative, you should use as_unsigned instead!
+    fn abs(&self) -> Self {
+        Self::new(self.value().abs())
+    }
+
+    /// Transforms angle, from [-circle/2;circle/2] to [0; circle] (by adding circle to negatice values, thus ensuring that the angle is conserved)
+    /// Values are assumed in [-circle/2;circle/2]. If not, call clamp instead!
+    fn as_unsigned(&self) -> Self {
+        match self.value() >= T::zero() {
+            true => Self::new(self.value()),
+            false => Self::from_portion(self.to_portion() + T::one())
+        }
+    }
+
+    /// Transforms angle, from [0;circle] to [-circle/2;circle/2] (ensuring that the angle is conserved)
+    /// Values are assumed in [0;circle]. If not, call clamp first!
+    fn as_signed(&self) -> Self {
+        match self.to_portion() <= T::from(0.5).unwrap() {
+            true => Self::new(self.value()),
+            false => Self::from_portion(self.to_portion() - T::one())
+        }
+    }
+
+    /// Transforms angle, from [-inf;inf] to [0;circle] (by doing modulo CIRCLE, preserving the underlying angle)
+    fn clamp(&self) -> Self {
+        let v = self.to_portion();
+        let c = v % T::one();
+
+        Self::from_portion(c)
+    }
+
+    /// Angle from a portion ([0;1])
+    fn from_portion(value: T) -> Self {
+        Self::new(value * T::from(Self::CIRCLE).unwrap())
+    }
+
+    /// Angle to a portion ([0;1])
+    fn to_portion(&self) -> T {
+        self.value() / T::from(Self::CIRCLE).unwrap()
+    }
 }
-impl<T: Clone> Angle<T> for Deg<T> {
+impl<T: Float> Angle<T> for Deg<T> {
+    const CIRCLE: f64 = 360.;
+
     fn value(&self) -> T {
         self.0.clone()
     }
 
-    fn sin(&self) -> T where T: Float {
-        self.value().sin()
-    }
-
-    fn cos(&self) -> T where T: Float {
-        self.value().cos()
+    fn new(value: T) -> Self {
+        Deg(value)
     }
 }
-impl<T: Clone> Angle<T> for Rad<T> {
+impl<T: Float> Angle<T> for Rad<T> {
+    const CIRCLE: f64 = std::f64::consts::PI * 2.;
     fn value(&self) -> T {
         self.0.clone()
     }
 
-    fn sin(&self) -> T where T: Float {
-        self.value().sin()
-    }
-
-    fn cos(&self) -> T where T: Float {
-        self.value().cos()
+    fn new(value: T) -> Self {
+        Rad(value)
     }
 }
-impl<T: Clone + NumCast + Zero> From<Deg<T>> for Rad<T> {
+impl<T: Float> From<Deg<T>> for Rad<T> {
     fn from(value: Deg<T>) -> Self {
         Rad(T::from(<f64 as NumCast>::from(value.value()).unwrap_or(f64::NAN) * RAD_PER_DEG).unwrap_or(T::zero()))
     }
 }
-impl<T: Clone + NumCast + Zero> From<Rad<T>> for Deg<T> {
+impl<T: Float> From<Rad<T>> for Deg<T> {
     fn from(value: Rad<T>) -> Self {
         Deg(T::from(<f64 as NumCast>::from(value.value()).unwrap_or(f64::NAN) * DEG_PER_RAD).unwrap_or(T::zero()))
     }
 }
-impl<T: Sub<T, Output = T> + Clone> Sub<Deg<T>> for Deg<T> {
+//todo Redo these! Right, now, mixing negative and positive angles could be messy. Maybe we could call clamp!
+impl<T: Sub<T, Output = T> + Float> Sub<Deg<T>> for Deg<T> {
     type Output = Deg<T>;
     fn sub(self, rhs: Deg<T>) -> Self::Output {
         Deg(self.value() - rhs.value())
+    }
+}
+impl<T: Add<T, Output = T> + Float> Add<Deg<T>> for Deg<T> {
+    type Output = Deg<T>;
+    fn add(self, rhs: Deg<T>) -> Self::Output {
+        Deg(self.value() + rhs.value())
     }
 }
 
@@ -170,26 +222,19 @@ pub trait Vector<P> {
     fn direction(&self) -> Self::Angle;
 
     /// Create a new vector from constituants
-    fn from_constituants(len: Self::Length, dir: Self::Angle) -> Self
-    where
-        Self: Sized;
+    fn from_constituants(len: Self::Length, dir: Self::Angle) -> Self;
 
-    fn from_points(from: P, to: P) -> Self
-    where
-        Self: Sized;
+    fn from_points(from: P, to: P) -> Self;
+
+    fn to_point(&self, from: P) -> P;
 
     /// Create a vector with the same direction and a new length
     fn with_length(&self, len: Self::Length) -> Self
-    where
-        Self: Sized,
-    {
+    where Self: Sized {
         Self::from_constituants(len, self.direction())
     }
     /// Create a vector with the same length and a new direction
-    fn with_direction(&self, dir: Self::Angle) -> Self
-    where
-        Self: Sized,
-    {
+    fn with_direction(&self, dir: Self::Angle) -> Self where Self: Sized {
         Self::from_constituants(self.length(), dir)
     }
 
@@ -217,6 +262,7 @@ impl<T: Float> Point for Point_<T> {
         let a = VecN::from_points(*self, other[0]);
         let b = VecN::from_points(*self, other[1]);
         let v = a.dot_product(b) / (a.length() * b.length());
+        //println!("{:?}", v.acos());
 
         Rad(v.acos()).into()
     }
@@ -227,7 +273,12 @@ impl<T: Float> Point for Point_<T> {
         let a = VecN::from_points(*self, other[0]);
         let b = VecN::from_points(*self, other[1]);
 
-        a.direction() - b.direction()
+        let a = a.direction().as_unsigned();
+        let b = b.direction().as_unsigned();
+
+        //println!("!!!{:?} {:?}!!!", a, b);
+
+        (b - a).clamp().as_signed()
     }
 }
 impl<V: Float> Vector<Point_<V>> for VecN<V, 2> {
@@ -238,32 +289,28 @@ impl<V: Float> Vector<Point_<V>> for VecN<V, 2> {
         (self[0].powi(2) + self[1].powi(2)).sqrt()
     }
 
+    /// Direction in -pi,pi
     fn direction(&self) -> Self::Angle {
         let norm = self.normalize();
-        match norm[1].asin() > V::from(0.).unwrap() {
+        match norm[1].asin() >= V::zero() {
+            // 0;pi angle
             true => Rad(norm[0].acos()).into(),
-            false => Rad((V::from(2.).unwrap()
-                - (norm[0] + V::from(1.).unwrap())
-                - V::from(1.).unwrap())
-            .acos()
-                - V::from(PI).unwrap())
-            .into(),
+            // -pi;0 angle
+            false => Rad(-norm[0].acos()).into(), //(V::from(2.).unwrap() - (norm[0] + V::from(1.).unwrap()) - V::from(1.).unwrap()).acos() - V::from(PI).unwrap()
         }
     }
 
-    fn from_constituants(len: Self::Length, dir: Self::Angle) -> Self
-    where
-        Self: Sized,
-    {
+    fn from_constituants(len: Self::Length, dir: Self::Angle) -> Self {
         let norm = VecN::as_normal(&dir);
         [norm[0] * len, norm[1] * len].into()
     }
 
-    fn from_points(from: Point_<V>, to: Point_<V>) -> Self
-    where
-        Self: Sized,
-    {
+    fn from_points(from: Point_<V>, to: Point_<V>) -> Self {
         [to.x - from.x, to.y - from.y].into()
+    }
+
+    fn to_point(&self, from: Point_<V>) -> Point_<V> {
+        Point_ { x: from.x + self[0], y: from.y + self[1] }
     }
 
     fn normalize(&self) -> Self {
@@ -285,7 +332,7 @@ impl<T> Size for Size_<T> {
         Size_(())
     }*/
 }
-impl<T: Float> OrientedOrthogonal for OriRect2D<T> {
+impl<T: Float + Debug> OrientedOrthogonal for OriRect2D<T> {
     type Angle = Deg<T>;
     type Position = Point_<T>;
     type Size = Size_<T>;
@@ -349,6 +396,20 @@ impl<T: Float> Pointers<T> {
     /// Distance from master to long
     fn hyp(&self) -> T {
         euclidean_distance(&self.short, &self.long)
+    }
+
+    pub fn rotate(&self, angle: Deg<T>, around: Point_<T>) -> Self {
+        let rotation = |p| {
+            let v = VecN::from_points(around, p);
+            let r = VecN::from_constituants(v.length(), v.direction() + angle);
+            r.to_point(around)
+        };
+        Pointers {
+            diameter: self.diameter,
+            master: rotation(self.master),
+            short: rotation(self.short),
+            long: rotation(self.long)
+        }
     }
 }
 
@@ -628,7 +689,7 @@ impl<T: Resizable<V, Scaler = U>, U: Clone, V: Clone> Resizable<V> for Vec<T> {
     }
 }
 
-impl<T: Float + Default> Pointers<T> {
+impl<T: Float + Default + Debug> Pointers<T> {
     pub fn as_computed<V: Ord + NumCast + ToPrimitive + Copy>(
         &self,
         value: &Vec<(Point_<T>, T)>,
@@ -638,7 +699,7 @@ impl<T: Float + Default> Pointers<T> {
         let px: [Point_<T>; 3] = self.into();
         let mut res = [Point_::default(); 3];
 
-        //todo: diameter checks
+        //todo: diameter checks?
         let mut d = T::from(0.).unwrap();
         for p in 0..3 {
             // Rank every possible point against the expected position (ie: the best choice is the nearest)

@@ -71,7 +71,8 @@ impl ShapeError {
     pub const LENGTH_THRESHOLD: f64 = 1.1;
 
     /// Tries to obtain a rectangle out of four points.
-    pub fn as_ortho<T: Float>(value: &[Point_<T>; 4]) -> ShapeResult<OriRect2D<T>> {
+    pub fn as_ortho<T: Float + Debug>(value: &[Point_<T>; 4]) -> ShapeResult<OriRect2D<T>> {
+        //println!("{:?}", value);
         //*1- Find the first diagonal
         let a = value[0].distance(&value[1]);
         let b = value[0].distance(&value[2]);
@@ -103,22 +104,25 @@ impl ShapeError {
         // We find the two other points. A rect should be described with the points in anti-trigonometric (clockwise) order.
         //println!("{:?} {:?} {:?}", value[0], adj_a, other);
         //println!("{:?} {:?} {:?}", value[0], adj_b, other);
-        let angl_a = value[0].signed_direction(&[adj_a, other]);
-        let angl_b = value[0].signed_direction(&[adj_b, other]);
+        //let angl_a = value[0].signed_direction(&[adj_a, other]);
+        //let angl_b = value[0].signed_direction(&[adj_b, other]);
         //println!(">>> {:?} {:?}", angl_a, angl_b);
         // One will be positive and the other negative!
         let ordered;
-        if angl_a > angl_b {
-            ordered = [value[0], adj_b, other, adj_a];
-        } else {
+        // Disabled code, the points returned by the QR finder are in the right order. Angle has been overhauled so we could maybe reenable this code?
+        /*if angl_a > angl_b {
             ordered = [value[0], adj_a, other, adj_b];
-        }
+        } else {
+            ordered = [value[0], adj_b, other, adj_a];
+        }*/
+        ordered = [value[0], adj_a, other, adj_b];
         // We can now reorder our points
 
         //*3- Calculate rect's parameters rotation
         //println!("o: {:?}", ordered);
+        //println!("GAY: {:?}", ordered[0].signed_direction(&[ordered[1], ordered[3]]));
         let rot = VecN::from_points(ordered[0], ordered[1]);
-        //println!("r: {:?}", rot);
+        //println!("r: {:?}", rot.direction());
         let rot = rot.direction();
         // We could rotate the rectangle. As it turns out, we can be sure that it will be valid in [0;90] (by just rotating the points around!)
         let size = Size_ {
