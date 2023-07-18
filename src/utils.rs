@@ -6,6 +6,7 @@ pub use opencv::core::{Point_, Rect_, Size_, VecN};
 use opencv::{core, objdetect, prelude::*, Result};
 
 use crate::status::{ShapeError, ShapeResult};
+use crate::data::Kind;
 
 fn euclidean_distance<T: Float>(from: &Point_<T>, to: &Point_<T>) -> T {
     ((from.x - to.x).powi(2) + (from.y - to.y).powi(2)).sqrt()
@@ -27,16 +28,16 @@ pub struct OriRect2D<T> {
     pub rect: Rect_<T>,
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct Question_<T> {
-    pub id: String,
+    pub kind: Kind,
     pub page: u8,
     pub rect: Rect_<T>
 }
 
 #[derive(Clone, Debug)]
 pub enum Answer {
-    Binary,
+    Binary(bool),
 }
 
 #[derive(Default, Clone, Debug)]
@@ -48,7 +49,7 @@ pub struct Metadata_<T> {
     pub pages: u8,
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct Content_<T> {
     pub questions: HashMap<String, Question_<T>>,
     pub pointers: Pointers<T>,
@@ -699,3 +700,24 @@ pub fn detect_qr(img: &Mat) -> Result<(QRDelimitor, QRData)> {
             .map_err(|_| opencv::Error::new(opencv::core::StsParseError, "not enough data in code!"))?,
     ))
 }
+
+/// Finds the index at which quartile q ([0;1]) is reached
+/// This is for lists where list[i] is the number of elements with value i.
+/// Otherwise, calculating quartiles is trivial
+pub fn index_quartile<T: Float>(values: &[T], q: T) -> Result<usize> {
+    let mut last = T::from(0.).unwrap();
+    let cumsum: Vec<T> = values.iter().map(|v| {
+        last = last + *v;
+        last
+    }).collect();
+
+    // Reduce population to the correct quartile
+    let top = *cumsum.last().ok_or(opencv::Error::new(opencv::core::StsVecLengthErr, "cannot sum over empty array."))? * q;
+
+    for i in 0..cumsum.len() {
+        if cumsum[i] >= top {
+            return Ok(i);
+        }
+    }
+    return Err(opencv::Error::new(opencv::core::StsError, "unkown error when trying to calculate median."));
+} 

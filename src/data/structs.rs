@@ -7,7 +7,7 @@ type Int = u8;
 type Text = String;
 
 /// Position and general information about a document.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum Kind {
     Binary,
     Numeric,

@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, fmt::Write, path::PathBuf, time, collections::HashMap};
+use std::{collections::HashMap, f32::consts::PI, fmt::Write, path::PathBuf, time, ops::{Add, AddAssign}};
 
 use clap::Parser;
 use log::{debug, error, info, log_enabled, trace, warn, Level};
@@ -87,13 +87,13 @@ fn image_trace(img: &Mat, name: &str) -> Result<bool> {
  * Display Functions *
  just pretty stuff that can often be useful
 */
-/// Display a histogram as a bar chart
-fn disp_hist(hist: &Mat, maxh: i32, barw: i32) -> Result<()> {
+/// Creates a visual representation of a histogram
+fn disp_hist(hist: &Mat, maxh: i32, barw: i32) -> Result<Mat> {
     let imgs = Size_ {
         width: barw * 256,
         height: maxh,
     };
-    let mut img = Mat::new_size_with_default(imgs, CV_8UC1, core::Scalar::default())?;
+    let img = Mat::new_size_with_default(imgs, CV_8UC1, core::Scalar::default())?;
 
     let mut max_val = 0.;
     core::min_max_loc(
@@ -104,10 +104,24 @@ fn disp_hist(hist: &Mat, maxh: i32, barw: i32) -> Result<()> {
         None,
         &core::no_array(),
     )?;
-    max_val = max_val.ln();
+
 
     for i in 0..256 {
-        imgproc::rectangle(
+        /*trace!("{:?}", Rect_ {
+            x: i * barw,
+            y: 0,
+            width: barw,
+            height: ((maxh as f32) * ((hist.at::<f32>(i)? + 1.).ln() / max_val as f32)) as i32,
+        });*/
+        let mut clip = Mat::roi(&img, Rect_ {
+            x: i * barw,
+            y: 0,
+            width: barw,
+            height: ((maxh as f32) * (hist.at::<f32>(i)? / max_val as f32)) as i32,
+        })?;
+
+        clip.set(core::Scalar::new(255., 0., 0., 0.))?;
+        /*imgproc::rectangle(
             &mut img,
             Rect_ {
                 x: i * barw,
@@ -119,11 +133,11 @@ fn disp_hist(hist: &Mat, maxh: i32, barw: i32) -> Result<()> {
             1,
             imgproc::LINE_8,
             0,
-        )?;
+        )?;*/
     }
 
-    imgcodecs::imwrite("YAAAAA.jpg", &img, &core::Vector::new())?;
-    Ok(())
+    //imgcodecs::imwrite("YAAAAA.jpg", &img, &core::Vector::new())?;
+    Ok(img)
 }
 
 /// Returns a string describing an image
@@ -198,7 +212,8 @@ fn markers_description_string(markers: &Pointers<f32>) -> Result<String> {
     let f = |e: std::fmt::Error| opencv::Error::new(core::StsError, e.to_string());
     let mut r = String::new();
 
-    write!(&mut r,
+    write!(
+        &mut r,
         "markers({}:{}-l, {}:{}-m, {}:{}-s, ø{})",
         markers.long.x.round(),
         markers.long.y.round(),
@@ -219,16 +234,93 @@ fn transform_description(tr: &Mat) -> Result<String> {
 
     let values: &[f64] = tr.data_typed()?;
     if values.len() != 6 {
-        error!("Transform matrix has wrong size! Should contain 6 elements, has {}", values.len());
+        error!(
+            "Transform matrix has wrong size! Should contain 6 elements, has {}",
+            values.len()
+        );
         return Err(opencv::Error::new(
             core::StsBadSize,
             "Wrong size for transform matrix.",
         ));
     }
 
-    write!(&mut r, "[{:.3} {:.3} {:.3} | {:.3} {:.3} {:.3}]", values[0], values[1], values[2], values[3], values[4], values[5]).map_err(f)?;
+    write!(
+        &mut r,
+        "[{:.3} {:.3} {:.3} | {:.3} {:.3} {:.3}]",
+        values[0], values[1], values[2], values[3], values[4], values[5]
+    )
+    .map_err(f)?;
 
     Ok(r)
+}
+
+/// Returns a string describing a rectangle
+fn rect_description(rect: &Rect_<f32>) -> Result<String> {
+    let f = |e: std::fmt::Error| opencv::Error::new(core::StsError, e.to_string());
+    let mut r = String::new();
+
+    write!(
+        &mut r,
+        "r({:.2}:{:.2} - {:.2}:{:.2})",
+        rect.tl().x,
+        rect.tl().y,
+        rect.br().x,
+        rect.br().y
+    )
+    .map_err(f)?;
+
+    Ok(r)
+}
+
+/// Returns a string describing a standard-size rectangle
+fn standard_rect_description(rect: &Rect_<i32>) -> Result<String> {
+    let f = |e: std::fmt::Error| opencv::Error::new(core::StsError, e.to_string());
+    let mut r = String::new();
+
+    write!(&mut r, "r({}:{})", rect.tl().x, rect.tl().y).map_err(f)?;
+
+    Ok(r)
+}
+
+type HistSeries = (Mat, [i32; 4]);
+/// Creates the image buffer to use in display
+fn startup_hist_serie(
+    histogram_height: i32,
+    bar_width: i32,
+    histogram_count: i32,
+) -> Result<HistSeries> {
+    Ok((
+        Mat::new_rows_cols_with_default(
+            histogram_height * histogram_count,
+            histogram_height + bar_width * 256,
+            core::CV_8UC1,
+            core::Scalar::default(),
+        )?,
+        [0, histogram_count, histogram_height, bar_width],
+    ))
+}
+
+/// Displays multiple histograms next to their source, in the same image, one after the other
+/// The source will be a square image of the size of the histogram's height
+fn disp_hist_serie(hist_series: &mut HistSeries, imgsource: &Mat, histogram: &Mat) -> Result<()> {
+    let count = hist_series.1[1];
+    let height = hist_series.1[2];
+    let barw = hist_series.1[3];
+    let i = hist_series.1.get_mut(0).unwrap();
+    // We make a clip of the area to write to
+    let mut imgs_clip = Mat::roi(&hist_series.0, Rect_ { x: 0, y: *i * height, width: height, height })?;
+
+    // Standardize the image size
+    imgproc::resize(imgsource, &mut imgs_clip, Size_ { width: height, height }, 0., 0., imgproc::INTER_NEAREST)?;
+
+    let mut hist_clip = Mat::roi(&hist_series.0, Rect_ { x: height, y: *i * height, width: barw * 256, height })?;
+
+    // We write our histogram
+    disp_hist(histogram, height, barw)?.copy_to(&mut hist_clip)?;
+
+    i.add_assign(1);
+
+    Ok(())
 }
 
 /*
@@ -381,13 +473,20 @@ fn detect_markers(
     // We have to force it as an int, because f32 is not ord!
     // We rescale it because the cast may make us loose too much information
     let actual_form = standard_markers.as_computed::<i64>(&kp);
-    debug!("standard: {}", markers_description_string(&standard_markers)?);
+    debug!(
+        "standard: {}",
+        markers_description_string(&standard_markers)?
+    );
     debug!("actual:   {}", markers_description_string(&actual_form)?);
     Ok(actual_form)
 }
 
 /// Fixes an image (applies transforms to ensure a standardized position)
-fn fix_image(image: &Mat, standard_markers: &Pointers<f32>, actual_markers: &Pointers<f32>) -> Result<Mat> {
+fn fix_image(
+    image: &Mat,
+    standard_markers: &Pointers<f32>,
+    actual_markers: &Pointers<f32>,
+) -> Result<Mat> {
     let f = |_| opencv::Error::new(opencv::core::StsParseError, "Scale error!");
     // Calculate the fixed image's resolution
     //if we want to avoid rescales, we need to apply an inverse scale transform on b
@@ -421,13 +520,103 @@ fn fix_image(image: &Mat, standard_markers: &Pointers<f32>, actual_markers: &Poi
     Ok(resized)
 }
 
-fn resolve_boxes<T: Into<i32>>(image: &Mat, boxes: HashMap<String, Question_<T>>) -> Result<HashMap<String, Answer>> {
+fn histogram(image: &Mat) -> Result<Mat> {
+    let mut himg: core::Vector<Mat> = core::Vector::new();
+    himg.push(image.clone());
+    let mut hist = Mat::new_nd_with_default(&[256], core::CV_32FC1, core::Scalar::default())?;
+    imgproc::calc_hist(
+        &himg,
+        &core::Vector::from(vec![0]),
+        &core::no_array(),
+        &mut hist,
+        &core::Vector::from(vec![256]),
+        &core::Vector::new(),
+        false,
+    )?;
+    Ok(hist)
+}
 
-    for b in boxes {
-        
+fn resolve_boxes(
+    image: &Mat,
+    boxes: &HashMap<String, Question_<f64>>,
+    page: u8,
+    resolution: f32,
+) -> Result<HashMap<String, Answer>> {
+    let mut r = HashMap::new();
+    let mut inner_hist_series;
+    // Traces the boxes
+    if log_enabled!(Level::Trace) {
+        inner_hist_series = startup_hist_serie(100, 1, boxes.iter().filter(|v| v.1.page == page && v.1.kind == data::Kind::Binary).count() as i32)?;
+    } else {
+        // Otherwise rust yells at us
+        inner_hist_series = (Mat::default(), [0,0,0,0])
     }
 
-    todo!()
+    // Calculate the background light
+    let total_hist = histogram(image)?;
+    if log_enabled!(Level::Trace) {
+        image_trace(&disp_hist(&total_hist, 100, 1)?, "histogram")?;
+    }
+    // We could probably bump it to 75?
+    //let total_hist: &[f32] = total_hist.data_typed()?;
+    //let bg = index_quartile(total_hist, 0.5);
+    //then we could use out background light as a calibration.
+    // Even better, we could find Q1-Q3, and with it learn something about the standard distribution of light? (and thus, we'd be able to guess wether or not it deviates from it significantly)
+
+    // Use a order-stable iteration when tracing
+    let mut itr;
+    if log_enabled!(Level::Trace) {
+        itr = boxes.iter().collect::<Vec<(&String, &Question_<f64>)>>();
+        itr.sort_by(|a, b| a.0.cmp(b.0));
+    } else {
+        itr = boxes.iter().collect();
+    }
+
+    for (id, b) in itr {
+        if b.page != page {
+            continue;
+        }
+        // Extract the actual content!
+        let contour = b.rect.rescale(resolution as f64).cast();
+        trace!("box \"{}\": {}", id, standard_rect_description(&contour)?);
+        let crop = Mat::roi(&image, contour)?;
+        // Analyse the content dependent on type
+        match b.kind {
+            data::Kind::Binary => {
+                let hists;
+                if log_enabled!(Level::Trace) {
+                    hists = Some(&mut inner_hist_series);
+                } else {
+                    hists = None;
+                }
+                r.insert(id.to_owned(), binary_box_analysis(&crop, hists)?)
+            },
+            _ => todo!(),
+        };
+    }
+    image_trace(&inner_hist_series.0, "captures")?;
+    Ok(r)
+}
+
+/// Analyses a binary box, returns the answer
+fn binary_box_analysis(crop: &Mat, histser: Option<&mut HistSeries>) -> Result<Answer> {
+    //note We could use the median color of the paper as a tool to scale our threshold
+    // Calculate a hist to see how everythin' is distributed
+    let hist = histogram(crop)?;
+    if let Some(h) = histser {
+        disp_hist_serie(h, crop, &hist)?;
+    }
+    let hist: &[f32] = hist.data_typed()?;
+    let i = index_quartile(hist, 0.5)?;
+    let a;
+    if i <= 142 {
+        a = Answer::Binary(true);
+    } else {
+        a = Answer::Binary(false);
+    }
+    trace!("=> {:?} ({})", a, i);
+    Ok(a)
+    //disp_hist(&hist, 200, 2)?;
 }
 
 fn main() -> Result<()> {
@@ -520,7 +709,9 @@ fn main() -> Result<()> {
     // 👍👍👍
 
     let resized = fix_image(&image, &ct.pointers.cast().rescale(res), &markers)?;
-    
+
+    resolve_boxes(&resized, &ct.questions, qr.1.page, res)?;
+
     // Crop the desired answer from the fixed image
     //let r = resolve(BOX, IMG_SIZE, resol);
     //let crop = Mat::roi(&resized, r)?;

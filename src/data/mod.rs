@@ -6,7 +6,7 @@ use opencv::{Result, core};
 ///Structs meant for data conversion
 mod structs;
 mod convert;
-
+pub use structs::Kind;
 
 pub fn read(file: PathBuf) -> Result<Content_<f64>> {
     let cnts = fs::read_to_string(file).unwrap();
