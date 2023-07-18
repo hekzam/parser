@@ -12,7 +12,7 @@ fn euclidean_distance<T: Float>(from: &Point_<T>, to: &Point_<T>) -> T {
 }
 
 pub type QRDelimitor = Vec<Point_<f32>>;
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 /// Hash, exam ID, and page number
 pub struct QRData {
     pub hash: Vec<u8>, 
@@ -32,6 +32,11 @@ pub struct Question_<T> {
     pub id: String,
     pub page: u8,
     pub rect: Rect_<T>
+}
+
+#[derive(Clone, Debug)]
+pub enum Answer {
+    Binary,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -357,17 +362,18 @@ impl<T> From<Pointers<T>> for [Point_<T>; 3] {
     }
 }
 
-impl<T: Float> From<Pointers<T>> for Size_<T> {
+impl<T: Float> TryFrom<Pointers<T>> for Size_<T> {
+    type Error = ShapeError;
     /// We also make angle checks to make sure the transform is mostly linear.
-    fn from(value: Pointers<T>) -> Self {
-        //const ANGLE_THRESHOLD: f32 = 1.1;
-        //let SQRT2 = 2.0_f32.sqrt();
-
-        let (w, d, _h) = (value.width(), value.height(), value.hyp());
-        //todo
-        Size_ {
-            width: w,
-            height: d,
+    fn try_from(value: Pointers<T>) -> ShapeResult<Self> {
+        let (w, h, d) = (value.width(), value.height(), value.hyp());
+        let calc_hyp = (w.powi(2) + h.powi(2)).sqrt();
+        match ShapeError::is_square(calc_hyp, d) {
+            true => Ok(Size_ {
+                width: w,
+                height: h,
+            }),
+            false => Err(ShapeError::NotLinearScale)
         }
     }
 }
@@ -662,8 +668,8 @@ impl<T: Float + Default> Pointers<T> {
 impl TryFrom<Vec<u8>> for QRData {
     type Error = ();
     fn try_from(mut value: Vec<u8>) -> std::result::Result<Self, Self::Error> {
-        let exid = value.pop().ok_or(())?;
         let page = value.pop().ok_or(())?;
+        let exid: u8 = value.pop().ok_or(())?;
         Ok(QRData{hash:value, id:exid, page:page})
     }
 }
@@ -683,7 +689,10 @@ pub fn detect_qr(img: &Mat) -> Result<(QRDelimitor, QRData)> {
 
     let mut pt = Mat::default();
     let data = detector.detect_and_decode(img, &mut pt, &mut core::no_array())?;
-    println!("{}", pt.empty());
+    if pt.empty() {
+        return Err(opencv::Error::new(core::StsNullPtr, "No QR Code was detected."));
+    }
+
     Ok((
         pt.data_typed()?.to_owned().into(),
         data.try_into()
