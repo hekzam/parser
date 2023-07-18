@@ -1,3 +1,6 @@
+Use: OpenCV v4.8.0 (though 4.7.0 should also work)
+The linking rust library does no include default features, as breaking changes occured between opencv4.7 and 4.8 (what a poor use of SemVer!) (the change being, dropping the "barcode" option, and merging it with general feature detectors), and the library used is not yet up to date.
+
 On macOS you're getting the dyld: Library not loaded: @rpath/libclang.dylib error during the build process.
 
 OS can't find libclang.dylib dynamic library because it resides in a non-standard path, set up the DYLD_FALLBACK_LIBRARY_PATH environment variable to point to the path where libclang.dylib can be found, e.g. for Command Line Tools:
