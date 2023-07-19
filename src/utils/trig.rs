@@ -1,11 +1,13 @@
 use super::angle::*;
 use super::structs::*;
 
-use std::{collections::BTreeMap, fmt::Debug};
+use std::{collections::BTreeMap, fmt::Display};
 
 use num_traits::{float::Float, Num, NumCast, ToPrimitive};
 
-pub use opencv::core::{Point_, Rect_, Size_, VecN};
+pub use opencv::core::{self, Point_, Rect_, Size_, VecN};
+use opencv::Result;
+use log::error;
 
 use crate::status::{ShapeError, ShapeResult};
 
@@ -257,11 +259,11 @@ impl<T: Float> TryFrom<Pointers<T>> for Size_<T> {
     }
 }
 
-impl<T: Float + Default + Debug> Pointers<T> {
+impl<T: Float + Default + Display> Pointers<T> {
     pub fn as_computed<V: Ord + NumCast + ToPrimitive + Copy>(
         &self,
         value: &Vec<(Point_<T>, T)>,
-    ) -> Self {
+    ) -> Result<Self> {
         // For now this simple implementation should work
         let mut value = value.clone();
         let px: [Point_<T>; 3] = self.into();
@@ -275,24 +277,38 @@ impl<T: Float + Default + Debug> Pointers<T> {
             for a in 0..value.len() {
                 let d = px[p].distance(&value[a].0);
                 // We have to cast here, because there is no primitive both float and ord
+                // TECHNICALLY, this could fail. But i dont think this is an issue (would need an image of size i64::MAX)
                 rankings.insert(V::from(d).unwrap(), (a, d));
             }
             //Take the best one
-            let r = rankings.pop_first().unwrap();
+            let r = match rankings.pop_first() {
+                Some((_, x)) => x,
+                None => {
+                    error!("Not enough markers were detected to resolve the image");
+                    return Err(opencv::Error::new(core::StsBadSize, "Not enough detected markers."));
+                }
+            };
             //Check that there isnt another option that comes close to this
-            if !rankings.is_empty() {
-                assert!(rankings.first_key_value().unwrap().1 .1 / r.1 .1 > T::from(2.).unwrap());
+            if let Some((_, x)) = rankings.first_key_value() {
+                if x.1 / r.1 < T::from(2.).unwrap() {
+                    error!("Two or more marker candidates are too close to the target marker to choose.");
+                    error!("Target: ({:.0}:{:.0})", px[p].x, px[p].y);
+                    error!("Closest two candiates: ({:.0}:{:.0}, d={}) ({:.0}:{:.0}, d={})", 
+                        value[r.0].0.x, value[r.0].0.y, r.1,
+                        value[x.0].0.x, value[x.0].0.y, x.1);
+                    return Err(opencv::Error::new(core::StsBadPoint, "Marker candidates too closeby."));
+                }
             }
-            let (v, dv) = value.remove(r.1 .0);
+            let (v, dv) = value.remove(r.0);
             res[p] = v;
             d = d + (dv / T::from(3.).unwrap());
         }
-        Pointers {
+        Ok(Pointers {
             diameter: d,
             master: res[0],
             short: res[1],
             long: res[2],
-        }
+        })
     }
 }
 impl TryFrom<Vec<u8>> for QRData {

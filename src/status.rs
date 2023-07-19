@@ -71,8 +71,8 @@ impl ShapeError {
     pub const LENGTH_THRESHOLD: f64 = 1.1;
 
     /// Tries to obtain a rectangle out of four points.
-    pub fn as_ortho<T: Float + Debug>(value: &[Point_<T>; 4]) -> ShapeResult<OriRect2D<T>> {
-        //println!("{:?}", value);
+    pub fn as_ortho<T: Float>(value: &[Point_<T>; 4]) -> ShapeResult<OriRect2D<T>> {
+        //trace!("{:?}", value);
         //*1- Find the first diagonal
         let a = value[0].distance(&value[1]);
         let b = value[0].distance(&value[2]);
@@ -120,7 +120,7 @@ impl ShapeError {
 
         //*3- Calculate rect's parameters rotation
         //println!("o: {:?}", ordered);
-        //println!("GAY: {:?}", ordered[0].signed_direction(&[ordered[1], ordered[3]]));
+        //trace!("GAY: {:?}", ordered[0].signed_direction(&[ordered[1], ordered[3]]));
         let rot = VecN::from_points(ordered[0], ordered[1]);
         //println!("r: {:?}", rot.direction());
         let rot = rot.direction();

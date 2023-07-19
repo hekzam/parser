@@ -335,7 +335,7 @@ fn read_image(path: &str) -> Result<Mat> {
     // Get the image
     debug!("Reading image at: \"{}\"", path);
     let img = imgcodecs::imread(&path, imgcodecs::IMREAD_GRAYSCALE)?; //Open & convert to grayscale
-    debug!("Image: {}", image_description_string(&img)?);
+    info!("Image: {}", image_description_string(&img)?);
     if img.empty() {
         error!("Empty image (searched at {})! This is likely because reading failed (ie: there was no file to read).", path);
         return Err(opencv::Error::new(
@@ -347,6 +347,7 @@ fn read_image(path: &str) -> Result<Mat> {
 
     //todo rescale image if too big?  (>600 dpi, probs) (to make the next operations less costly!)
     if resol.width.max(resol.height) > 5000 {
+        // Not a fail state!
         warn!("Your image appears to be very big! ({} by {}) This could have an impact on performance!", resol.width, resol.height)
     }
     // Image cleanup
@@ -363,7 +364,7 @@ fn standard_size(image: &Mat, standard: &Size_<f32>) -> Result<f32> {
 
     let res = resol.cast().as_scale(&standard)?;
 
-    debug!("Resolution: {} px/cm", res);
+    info!("Resolution: {} px/cm", res);
 
     Ok(res)
 }
@@ -386,13 +387,27 @@ fn check_qr<T>(
     debug!("QR Position: {} deg({:.2})", rect_description(&qr_pos.rect)?, qr_pos.angle.value());
     let sz = qr_pos.rect.as_scale(&standard_qr.cast()).unwrap(); //todo hande the error better
     if sz > LEN_DX || sz < 1. / LEN_DX {
-        warn!(
-            "Detected QR Code is too {}.",
-            if sz > LEN_DX { "big" } else { "small" }
-        );
+        error!("Detected QR Code is too {}. Resizing by a factor greater than {:.0}% could cause too great of an error, and is therefore disabled.",
+            if sz > LEN_DX { "big" } else { "small" }, (1. - LEN_DX) * 100.);
+        return Err(opencv::Error::new(core::StsBadSize, "Invalid QR code size."));
     }
+    // We could use the rotation as a hint for mirroring detection: 
+    //We can calculate the expected aspect ratio, and match it.
+    //If the AR is reversed (we expect portrait but have landscape)
+    //  and the QR code is rotated by ±90°,
+    //  the image is just rotated by that same amount. We can apply the inverse
+    //  rotation accordingly.
+    //If the AR is as expected (we expected and got portrait)
+    //  and the QR code is still rotated by ±90°,
+    //  the image is mirrored! We can apply an inverse mirror operation,
+    //  (trivial, cf: https://docs.opencv.org/4.x/d1/da0/tutorial_remap.html)
+    //  And the resulting image will have a qr code rotated by 180° or 0° 
+    //  (because mirror operations cancel each other with a rotation)
+    //(Use the same logic for the cases of reversed AR with r in {180°,0°}
+    //  (means the image is mirrored),
+    //  and expected AR with r in {180°,0°} (means the image is rotated)
 
-    debug!("QR Data: {}", qr_description_string(&qr.1)?);
+    info!("QR Data: {}", qr_description_string(&qr.1)?);
     // To chain multiple errors
     let mut r = Ok((qr_pos, qr.1.clone()));
     if meta.hash != qr.1.hash {
@@ -403,7 +418,7 @@ fn check_qr<T>(
         );
         r = Err(opencv::Error::new(core::StsBadArg, "Invalid QR Code data."));
     } else {
-        trace!("QR Code contains the expected hash");
+        debug!("QR Code contains the expected hash");
     }
     if meta.id != qr.1.id {
         error!(
@@ -412,7 +427,7 @@ fn check_qr<T>(
         );
         r = Err(opencv::Error::new(core::StsBadArg, "Invalid QR Code data."));
     } else {
-        trace!("QR Code contains the expected ID");
+        debug!("QR Code contains the expected ID");
     }
     if meta.pages < qr.1.page || qr.1.page == 0 {
         error!(
@@ -421,7 +436,7 @@ fn check_qr<T>(
         );
         r = Err(opencv::Error::new(core::StsBadArg, "Invalid QR Code data."));
     } else {
-        trace!("QR Code contains a valid page number");
+        debug!("QR Code contains a valid page number");
     }
 
     r
@@ -473,21 +488,22 @@ fn detect_markers(
     let mut kp = Vec::new();
     for k in keyp {
         let s = k.pt();
-        trace!("point(@{}:{}, ø{})", s.x.round(), s.y.round(), k.size());
+        debug!("point(@{}:{}, ø{})", s.x.round(), s.y.round(), k.size());
         kp.push((s, k.size()));
     }
     // We use the rotation information from our qr code to rotate the standard markers (and thus, provide a rotation-aware fitting)
     // Right now we do need the qr code. IDEALLY, we would be able to do some minimal rotation detection even without, i think.
+    // We could also apply the size hint obtained from the QR code to our standards markers!
     let center = image.size()?.cast().rescale(0.5).into();
     let rotated_markers = standard_markers.rotate(actual_qr.0.angle, center);
 
+    info!("standard: {}", markers_description_string(&standard_markers)?);
+    info!("rotated:  {}", markers_description_string(&rotated_markers)?);
     // We hopefully have our points, now fit them!
     // We have to force it as an int, because f32 is not ord!
     // We rescale it because the cast may make us loose too much information
-    let actual_form = rotated_markers.as_computed::<i64>(&kp);
-    debug!("standard: {}", markers_description_string(&standard_markers)?);
-    debug!("rotated:  {}", markers_description_string(&rotated_markers)?);
-    debug!("actual:   {}", markers_description_string(&actual_form)?);
+    let actual_form = rotated_markers.as_computed::<i64>(&kp)?;
+    info!("actual:   {}", markers_description_string(&actual_form)?);
     Ok(actual_form)
 }
 
@@ -511,9 +527,9 @@ fn fix_image(
     // Create a transform map to go from original image to fixed image
     let a: [Point_<f32>; 3] = standard_markers.into();
     let b: [Point_<f32>; 3] = actual_markers.into();
-    //println!("{:?} {:?}", a, b);
+
     let scalemap = imgproc::get_affine_transform_slice(b.as_slice(), a.as_slice())?;
-    trace!("transform matrix: {}", transform_description(&scalemap)?);
+    debug!("transform matrix: {}", transform_description(&scalemap)?);
 
     // Fix the image & write it
     let mut resized = Mat::default();
@@ -588,7 +604,7 @@ fn resolve_boxes(
         }
         // Extract the actual content!
         let contour = b.rect.rescale(resolution as f64).cast();
-        trace!("box \"{}\": {}", id, standard_rect_description(&contour)?);
+        debug!("box \"{}\": {}", id, standard_rect_description(&contour)?);
         let crop = Mat::roi(&image, contour)?;
         // Analyse the content dependent on type
         match b.kind {
@@ -624,7 +640,7 @@ fn binary_box_analysis(crop: &Mat, histser: Option<&mut HistSeries>) -> Result<A
     } else {
         a = Answer::Binary(false);
     }
-    trace!("=> {:?} ({})", a, i);
+    debug!("=> {:?} ({})", a, i);
     Ok(a)
     //disp_hist(&hist, 200, 2)?;
 }
