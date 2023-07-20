@@ -1,4 +1,4 @@
-use std::{collections::HashMap, f32::consts::PI, fmt::Write, path::PathBuf, time, ops::{Add, AddAssign}};
+use std::{collections::HashMap, f32::consts::PI, fmt::{Write, Display}, path::PathBuf, time, ops::{Add, AddAssign}};
 
 use clap::Parser;
 use log::{debug, error, info, log_enabled, trace, warn, Level};
@@ -72,7 +72,7 @@ fn boot_cl() -> Result<()> {
 
 /// Write an image only useful when tracing
 fn image_trace(img: &Mat, name: &str) -> Result<bool> {
-    const TRACE_FOLDER: &str = "trace/";
+    const TRACE_FOLDER: &str = "reader/trace/";
     const TRACE_EXTENSION: &str = ".jpg";
 
     if log_enabled!(Level::Trace) {
@@ -610,7 +610,7 @@ fn resolve_boxes(
         }
         // Extract the actual content!
         let contour = b.rect.rescale(resolution as f64).cast();
-        debug!("box \"{}\": {}", id, standard_rect_description(&contour)?);
+        trace!("box \"{}\": {}", id, standard_rect_description(&contour)?);
         let crop = Mat::roi(&image, contour)?;
         // Analyse the content dependent on type
         match b.kind {
@@ -646,7 +646,7 @@ fn binary_box_analysis(crop: &Mat, histser: Option<&mut HistSeries>) -> Result<A
     } else {
         a = Answer::Binary(false);
     }
-    debug!("=> {:?} ({})", a, i);
+    trace!("=> {:?} ({})", a, i);
     Ok(a)
     //disp_hist(&hist, 200, 2)?;
 }
@@ -656,8 +656,92 @@ fn binary_box_analysis(crop: &Mat, histser: Option<&mut HistSeries>) -> Result<A
  * Notation functions *
  used for the notation process.
 */
-#[derive(Clone, Copy, PartialEq, PartialOrd)]
+/// Stores the calculated grades
+#[derive(Debug, Clone)]
+enum GradeCollector {
+    Number(BinaryAnswerScore),
+    Digits(Vec<BinaryAnswerScore>),
+}
+impl GradeCollector {
+    fn clamp(self, min: f64, max: f64) -> Self {
+        match self {
+            GradeCollector::Number(x) => GradeCollector::Number(x.clamp(min, max)),
+            GradeCollector::Digits(_) => self,
+        }
+    }
+}
+impl Add<TypedAnswer> for GradeCollector {
+    type Output = Option<GradeCollector>;
+    fn add(self, rhs: TypedAnswer) -> Self::Output {
+        match self {
+            GradeCollector::Number(x) => match rhs.1 {
+                model::Grader::Number => Some(GradeCollector::Number(x+rhs.0)),
+                _ => None,
+            },
+            GradeCollector::Digits(v) => match rhs.1 {
+                model::Grader::Digits(i) => {
+                    let mut w = v.clone();
+                    let a = w.get_mut(i as usize)?;
+                    *a = *a + rhs.0;
+                    Some(GradeCollector::Digits(w))
+                },
+                _ => None,
+            }
+        }
+    }
+}
+impl Add for GradeCollector {
+    type Output = Option<GradeCollector>;
+    fn add(self, rhs: Self) -> Self::Output {
+        match self {
+            GradeCollector::Number(x) => match rhs {
+                GradeCollector::Number(y) => Some(GradeCollector::Number(x+y)),
+                _ => None,
+            },
+            GradeCollector::Digits(v) => match rhs {
+                GradeCollector::Digits(w) => {
+                    if v.len() != w.len() {
+                        return None;
+                    }
+                    let mut i = 0;
+                    Some(GradeCollector::Digits(v.into_iter().map(|a| {
+                        let r = a + w[i];
+                        i+=1;
+                        r
+                    }).collect()))
+                },
+                _ => None,
+            }
+        }
+    }
+}
+impl Display for GradeCollector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GradeCollector::Number(x) => write!(f, "{}", x),
+            GradeCollector::Digits(v) => {
+                for x in v {
+                    write!(f, "{}", x.string("_"))?;
+                }
+                Ok(())
+            },
+        }
+    }
+}
+impl From<model::Grader> for GradeCollector {
+    fn from(value: model::Grader) -> Self {
+        match value {
+            model::Grader::Number => GradeCollector::Number(BinaryAnswerScore::Blank),
+            model::Grader::Digits(n) => GradeCollector::Digits(
+                (0..n).into_iter()
+                    .map(|_| BinaryAnswerScore::Blank).collect())
+        }
+    }
+}
+type Grades = HashMap<String, GradeCollector>;
+#[derive(Clone, Copy, PartialEq, PartialOrd, Debug, Default)]
 enum BinaryAnswerScore {
+    #[default]
     Blank,
     Answered(f64),
 }
@@ -673,6 +757,18 @@ impl BinaryAnswerScore {
         match self {
             BinaryAnswerScore::Blank => false,
             BinaryAnswerScore::Answered(_) => true,
+        }
+    }
+    fn clamp(self, min: f64, max: f64) -> Self {
+        match self {
+            BinaryAnswerScore::Blank => self,
+            BinaryAnswerScore::Answered(x) => BinaryAnswerScore::Answered(x.clamp(min, max)),
+        }
+    }
+    fn string(&self, blank: &str) -> String {
+        match self {
+            BinaryAnswerScore::Blank => blank.to_owned(),
+            BinaryAnswerScore::Answered(x) => x.to_string(),
         }
     }
 }
@@ -696,37 +792,51 @@ impl Add for BinaryAnswerScore {
         }
     }
 }
+impl Display for BinaryAnswerScore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BinaryAnswerScore::Blank => write!(f, "blank"),
+            BinaryAnswerScore::Answered(x) => write!(f, "{}", x),
+        }
+    }
+}
+type TypedAnswer = (BinaryAnswerScore, model::Grader);
 /// Notes an individual binary answer
 fn note_bin_answer(_a_id: &String, model: &model::Answer, actual: &Answer) -> Option<BinaryAnswerScore> {
     match actual {
         Answer::Binary(v) => match v {
-            true => {
-                trace!("answer {} filled, granting {} points.", _a_id, model.score);
-                Some(model.score.into())
-            },
-            false => {
-                trace!("answer {} left blank.", _a_id);
-                Some(f64::NAN.into())
-            },
+            true => Some(model.score.into()),
+            false => Some(f64::NAN.into()),
         }
     }
 }
-/// Notes a question.
-fn note_question(_q_id: &String, model: &model::Question, actual: &HashMap<String, Answer>) -> Option<f64> {
+/// Notes a question. Since MTF (MTF hehe) is technically multiple questions, we return a collection of answer scores.
+fn note_question(_q_id: &String, model: &model::Question, actual: &HashMap<String, Answer>) -> Option<Vec<BinaryAnswerScore>> {
+    let mut grade_table = Vec::new();
     match &model.kind {
         // The simplest case. We just test each answer!
         model::Kind::MCQ(answers) => {
-            let mut note = 0.;
+            let mut note = BinaryAnswerScore::Blank;
 
             let itr = ssitr(answers, |a, b| a.0.cmp(b.0));
             for (id, a) in itr {
                 if let Some(v) = actual.get(id) {
-                    note += note_bin_answer(&id, &a, v)?.value();
+                    let n = note_bin_answer(&id, &a, v)?;
+                    if n.answered() {
+                        trace!("answer {} filled, granting {} points.", id, n);
+                    }
+                    note = note + n;
+                } else {
+                    error!("Discrepancy detected: {} does not exist in the position file.", id);
                 }
             }
             let note = note.clamp(model.min, model.max);
-            debug!("Note for question {}: {}", _q_id, note);
-            Some(note)
+            if note.answered() {
+                debug!("Note for question {}: {}", _q_id, note);
+            } else {
+                warn!("Question {} was not answered!", _q_id);
+            }
+            grade_table.push(note);
         },
         // W
         model::Kind::OneInN(answers) => {
@@ -738,23 +848,28 @@ fn note_question(_q_id: &String, model: &model::Question, actual: &HashMap<Strin
                     let n = note_bin_answer(id, a, v)?;
                     if !note.answered() {
                         // Not yet found the actual answer
+                        if n.answered() {
+                            debug!("Question {} has answer {}, granting {} points.", _q_id, id, n);
+                        }
                         note = note + n;
                     } else if n.answered() {
                         // More than one answer found
                         error!("Multiple answers were chosen for this OneInN question: {}.", _q_id);
                         return None;
                     }
+                } else {
+                    error!("Discrepancy detected: {} does not exist in the position file.", id);
                 }
             }
+            if !note.answered() {
+                warn!("Question {} was not answered!", _q_id);
+            }
             // We PROBABLY dont need to clamp here?
-            let note = note.value().clamp(model.min, model.max);
-            debug!("Note for question {}: {}", _q_id, note);
-            Some(note)
+            let note = note.clamp(model.min, model.max);
+            grade_table.push(note);
         },
-        // Like MFT (MFT hehe), but with a single added condition
-        model::Kind::MultipleTF(answers) => {
-            let mut note = 0.;
-            
+        // Like MCQ mixed with OneInN (because it's closer to a series of anser than a series of questions)
+        model::Kind::MultipleTF(answers) => {            
             let itr = ssitr(answers, |a, b| a.0.cmp(b.0));
             for (id, a) in itr {
                 // Check both true and false
@@ -765,7 +880,6 @@ fn note_question(_q_id: &String, model: &model::Question, actual: &HashMap<Strin
                 } else {
                     t = None
                 }
-
                 let id_f = id.to_owned() + "F";
                 let f;
                 if let Some(v) = actual.get(&id_f) {
@@ -773,48 +887,76 @@ fn note_question(_q_id: &String, model: &model::Question, actual: &HashMap<Strin
                 } else {
                     f = None
                 }
-
                 // Check that either both or none of them were found AND that only one was ticked.
                 if f.is_some() && t.is_some() {
                     let f = f.unwrap();
                     let t = t.unwrap();
-                    if f.answered() ^ t.answered() {
-                        note += f.value() + t.value();
+                    if !(f.answered() && t.answered()) {
+                        let a = f+t;
+                        if a.answered() {
+                            debug!("{} was answered {}, granting {} points.", id, if t.answered() { "true" } else { "false" }, (a));
+                        } else {
+                            warn!("{} was not answered!", _q_id); 
+                        }
+                        grade_table.push(a);
                     } else {
-                        error!("TrueFalse question has {} detected as filled: {}", if t.answered() { "both answers" } else { "no answer" }, id);
+                        error!("TrueFalse question has both answers detected as filled: {}", id);
                         return None;
                     }
                 } else if !(t.is_none() && f.is_none()) {
-                    error!("Could not find answer \"{}\" in TrueFalse element: {}.", if t.is_some() { "true" } else { "false" }, id);
+                    // Only one of the two does not exist, perplexing...
+                    error!("Could not find answer box \"{}\" in TrueFalse element: {}.", if t.is_some() { "true" } else { "false" }, id);
                     return None;
+                } else {
+                    error!("Discrepancy detected: {} does not exist in the position file.", id);
                 }
             }
-            let note = note.clamp(model.min, model.max);
-            debug!("Note for question {}: {}", _q_id, note);
-            Some(note)
         }
-    }
+    };
+
+    Some(grade_table)
 }
-/// Notes a whole exercise.
-fn note_exercise(_ex_id: &String, model: &model::Exercise, actual: &HashMap<String, Answer>) -> Option<f64> {
-    let mut note = 0.;
+/// Notes a whole exercise. Compiles the individual scores into grades as it goes
+fn note_exercise(_ex_id: &String, model: &model::Exercise, actual: &HashMap<String, Answer>, initial_grader: Grades) -> Option<Grades> {
+    let mut grades = initial_grader;
+
     let itr = ssitr(&model.q, |a, b| a.0.cmp(b.0));
     for (id, q) in itr {
-        note += note_question(id, q, actual)?;
+        let note = note_question(id, q, actual)?;
+        let grade = grades.entry(q.gd.0.clone()).or_insert(q.gd.1.clone().into());
+        let note = note.into_iter().reduce(|acc, e| acc + e)?.clamp(q.min, q.max);
+        *grade = (grade.clone() + (note, q.gd.1.clone()))?;
     }
-    let note = note.clamp(model.min, model.max);
-    info!("Note for exercise {}: {}", _ex_id, note);
-    Some(note)
+    for (_, v) in grades.iter_mut() {
+        *v = v.clone().clamp(model.min, model.max);
+    }
+    //let note = note.clamp(model.min, model.max);
+    //info!("Note for exercise {}: {}", _ex_id, note);
+    Some(grades)
 }
 /// Notes the exam according to the model
-fn note_exam(model: &model::Model, answers: &HashMap<String, Answer>) -> Option<f64> {
-    let mut note = 0.;
-    
+fn note_exam(model: &model::Model, answers: &HashMap<String, Answer>) -> Option<Grades> {
+    let mut grades = Grades::new();
+    for (s, gd) in &model.grading {
+        grades.insert(s.to_owned(), gd.clone().into());
+    }
+    // The gader's initial state
+    let initial_grader = grades.clone();
+
     let itr = ssitr(&model.ex, |a, b| a.0.cmp(b.0));
     for (id, e) in itr {
-        note += note_exercise(id, e, answers)?;
+        let e_grade = note_exercise(id, e, answers, initial_grader.clone())?;
+        // Merge the grades
+        for (k, v) in grades.iter_mut() {
+            if let Some(w) = e_grade.get(k) {
+                *v = (v.clone() + w.clone())?;
+            }
+        }
     }
-    Some(note)
+    for (_, v) in grades.iter_mut() {
+        *v = v.clone().clamp(model.min, model.max);
+    }
+    Some(grades)
 }
 
 /*
@@ -823,7 +965,7 @@ fn note_exam(model: &model::Model, answers: &HashMap<String, Answer>) -> Option<
 */
 
 /// Reads an image, and resolves the boxes according to the pointed content.
-fn resolve(image_file: &String, content: &Content_<f64>) -> Result<HashMap<String, Answer>> {
+fn resolve(image_file: &String, content: &Content_<f64>) -> Result<(HashMap<String, Answer>, u8)> {
     // Get the image
     let image = read_image(image_file)?;
 
@@ -891,11 +1033,11 @@ fn resolve(image_file: &String, content: &Content_<f64>) -> Result<HashMap<Strin
 
     let resized = fix_image(&image, &content.pointers.cast().rescale(res), &markers)?;
 
-    resolve_boxes(&resized, &content.questions, qr.1.page, res)
+    Ok((resolve_boxes(&resized, &content.questions, qr.1.page, res)?, qr.1.page))
 }
 
 /// Notes the resolved content according to the model
-fn grade<T>(answers: &HashMap<String, Answer>, model: &model::Model, content_meta: &Metadata_<T>) -> Result<f64> {
+fn grade<T>(answers: &HashMap<String, Answer>, model: &model::Model, content_meta: &Metadata_<T>) -> Result<Grades> {
     if model.md.id != content_meta.id {
         error!("Inconsitent exam id between the model and the position files. Are you sure you have the right files?");
         return Err(opencv::Error::new(core::StsBadArg, "Inconsistent exam id."));
@@ -926,12 +1068,29 @@ fn main() -> Result<()> {
     // Run resolve for each image, accumulate the answers.
     let mut answers = HashMap::new();
     let mut i = 0;
+    let mut page_counter = vec![];
     for image in args.images {
         info!("Processing image #{}", i);
-        answers.extend(resolve(&image, &ct)?);
-        i+=1;
+        let (ans, p) = resolve(&image, &ct)?;
+        answers.extend(ans);
+        page_counter.push(p);
+        i += 1;
     }
     info!("Processing finished, now grading.");
+    // Check that we have all the pages
+    page_counter.sort();
+    let orig_ct = page_counter.len();
+    page_counter.dedup();
+    // These two are errors, but since they are *Technically* recoverable, we don't fail. should we?
+    if page_counter.len() < orig_ct {
+        error!("Some of the resoloved images were duplicated! This could mean you have mixed up two different copies!");
+    }
+    if page_counter.len() < ct.metadata.pages as usize {
+        error!("It seems you have too few pages! This means that grading will not output the right result, if not outright fail!");
+    }
+    if page_counter.len() > ct.metadata.pages as usize {
+        warn!("It seems you have too many pages?? Don't worry, they will be ignored during the grading process, but you should look into that!");
+    }
 
     let model = data::read_model(PathBuf::from(args.model))?;
 
@@ -939,6 +1098,9 @@ fn main() -> Result<()> {
 
     info!("Done: {:#?}", start.elapsed());
 
-    print!("Note: {}\n", note);
+    for (k, v) in note {
+        print!("{}: {}\n", k, v);
+    }
+
     Ok(())
 }

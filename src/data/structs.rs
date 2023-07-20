@@ -78,10 +78,15 @@ pub mod model {
     pub struct Model {
         pub md: Meta,
         pub ex: HashMap<Text, Exercise>,
+        pub grading: HashMap<Text, Grader>,
+        // These minmax fields only apply to number grades
+        pub max: Float,
+        pub min: Float,
     }
     /// Describe an exercise
     #[derive(Deserialize, Debug)]
     pub struct Exercise {
+        // These minmax fields only apply to number grades
         pub max: Float,
         pub min: Float,
         pub q: HashMap<Text, Question>,
@@ -93,6 +98,7 @@ pub mod model {
         pub kind: Kind,
         pub max: Float,
         pub min: Float,
+        pub gd: GraderReference,
     }
     /// Describes a (binary) answer
     #[derive(Deserialize, Debug)]
@@ -128,4 +134,16 @@ pub mod model {
         OneInN(HashMap<Text, Answer>),
         MultipleTF(HashMap<Text, AnswerTF>),
     }
+    /// The grading systems used, and their references
+    #[derive(Deserialize, Debug, Clone)]
+    pub enum Grader {
+        /// Floating-point grading
+        Number,
+        /// Descriptor for a base ten number. A question with this grading can then define one of its numbers
+        Digits(Int)
+    }
+    /// References an already created grader
+    #[derive(Deserialize, Debug)]
+    pub struct GraderReference(pub Text, pub Grader);
+    
 }
