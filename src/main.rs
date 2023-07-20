@@ -1,4 +1,4 @@
-use std::{collections::HashMap, f32::consts::PI, fmt::Write, path::PathBuf, time, ops::AddAssign};
+use std::{collections::HashMap, f32::consts::PI, fmt::Write, path::PathBuf, time, ops::{Add, AddAssign}};
 
 use clap::Parser;
 use log::{debug, error, info, log_enabled, trace, warn, Level};
@@ -22,6 +22,7 @@ mod data;
 mod status;
 mod utils;
 use utils::*;
+use data::structs::model;
 
 use crate::status::ShapeError;
 /*
@@ -80,6 +81,19 @@ fn image_trace(img: &Mat, name: &str) -> Result<bool> {
         imgcodecs::imwrite(&fname, img, &core::Vector::default())
     } else {
         Ok(false)
+    }
+}
+
+/// When tracing, creates an order-stable iteration from an unstable collection
+fn ssitr<S: Iterator<Item = U>, T: IntoIterator<IntoIter = S, Item = U>, U, Z: FnMut(&U,&U) -> std::cmp::Ordering>(unstable_collection: T, stabilizer: Z) -> std::vec::IntoIter<U> {
+    // Use a order-stable iteration when tracing
+    if log_enabled!(Level::Trace) {
+        let mut vtr = unstable_collection.into_iter().collect::<Vec<U>>();
+        vtr.sort_by(stabilizer);
+        vtr.into_iter()
+    } else {
+        // Note: not really efficient, would be great if we didnt have to go trhu a collect :(
+        unstable_collection.into_iter().collect::<Vec<U>>().into_iter()
     }
 }
 
@@ -344,7 +358,7 @@ fn read_image(path: &str) -> Result<Mat> {
         ));
     }
     let resol: Size_<i32> = img.size()?;
-
+    // it may be nice to check aspect ratios at this point?
     //todo rescale image if too big?  (>600 dpi, probs) (to make the next operations less costly!)
     if resol.width.max(resol.height) > 5000 {
         // Not a fail state!
@@ -589,15 +603,7 @@ fn resolve_boxes(
     //then we could use out background light as a calibration.
     // Even better, we could find Q1-Q3, and with it learn something about the standard distribution of light? (and thus, we'd be able to guess wether or not it deviates from it significantly)
 
-    // Use a order-stable iteration when tracing
-    let mut itr;
-    if log_enabled!(Level::Trace) {
-        itr = boxes.iter().collect::<Vec<(&String, &Question_<f64>)>>();
-        itr.sort_by(|a, b| a.0.cmp(b.0));
-    } else {
-        itr = boxes.iter().collect();
-    }
-
+    let itr = ssitr(boxes, |a, b| a.0.cmp(b.0));
     for (id, b) in itr {
         if b.page != page {
             continue;
@@ -645,23 +651,183 @@ fn binary_box_analysis(crop: &Mat, histser: Option<&mut HistSeries>) -> Result<A
     //disp_hist(&hist, 200, 2)?;
 }
 
-fn main() -> Result<()> {
-    // Activate the logger (the default lever should not be higher than warn, as warnings should not be disregarded)
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
 
-    let args = cli::Cli::parse();
+/*
+ * Notation functions *
+ used for the notation process.
+*/
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+enum BinaryAnswerScore {
+    Blank,
+    Answered(f64),
+}
+impl BinaryAnswerScore {
+    /// Whenver it's safe to assume that unanswered will mean 0 points (ie: MCQs)
+    fn value(&self) -> f64 {
+        match self {
+            BinaryAnswerScore::Blank => 0.,
+            BinaryAnswerScore::Answered(x) => *x,
+        }
+    }
+    fn answered(&self) -> bool {
+        match self {
+            BinaryAnswerScore::Blank => false,
+            BinaryAnswerScore::Answered(_) => true,
+        }
+    }
+}
+impl From<f64> for BinaryAnswerScore {
+    fn from(value: f64) -> Self {
+        if value.is_nan() {
+            BinaryAnswerScore::Blank
+        } else {
+            BinaryAnswerScore::Answered(value)
+        }
+    }
+}
+impl Add for BinaryAnswerScore {
+    type Output = BinaryAnswerScore;
+    fn add(self, rhs: Self) -> Self::Output {
+        match self {
+            // Either kept blank, or assigned an answer
+            BinaryAnswerScore::Blank => rhs,
+            // Merge the anwer values
+            BinaryAnswerScore::Answered(x) => BinaryAnswerScore::Answered(x + rhs.value()),
+        }
+    }
+}
+/// Notes an individual binary answer
+fn note_bin_answer(_a_id: &String, model: &model::Answer, actual: &Answer) -> Option<BinaryAnswerScore> {
+    match actual {
+        Answer::Binary(v) => match v {
+            true => {
+                trace!("answer {} filled, granting {} points.", _a_id, model.score);
+                Some(model.score.into())
+            },
+            false => {
+                trace!("answer {} left blank.", _a_id);
+                Some(f64::NAN.into())
+            },
+        }
+    }
+}
+/// Notes a question.
+fn note_question(_q_id: &String, model: &model::Question, actual: &HashMap<String, Answer>) -> Option<f64> {
+    match &model.kind {
+        // The simplest case. We just test each answer!
+        model::Kind::MCQ(answers) => {
+            let mut note = 0.;
 
-    // Start opencl
-    boot_cl()?;
+            let itr = ssitr(answers, |a, b| a.0.cmp(b.0));
+            for (id, a) in itr {
+                if let Some(v) = actual.get(id) {
+                    note += note_bin_answer(&id, &a, v)?.value();
+                }
+            }
+            let note = note.clamp(model.min, model.max);
+            debug!("Note for question {}: {}", _q_id, note);
+            Some(note)
+        },
+        // W
+        model::Kind::OneInN(answers) => {
+            let mut note = BinaryAnswerScore::Blank;
+            
+            let itr = ssitr(answers, |a, b| a.0.cmp(b.0));
+            for (id, a) in itr {
+                if let Some(v) = actual.get(id) {
+                    let n = note_bin_answer(id, a, v)?;
+                    if !note.answered() {
+                        // Not yet found the actual answer
+                        note = note + n;
+                    } else if n.answered() {
+                        // More than one answer found
+                        error!("Multiple answers were chosen for this OneInN question: {}.", _q_id);
+                        return None;
+                    }
+                }
+            }
+            // We PROBABLY dont need to clamp here?
+            let note = note.value().clamp(model.min, model.max);
+            debug!("Note for question {}: {}", _q_id, note);
+            Some(note)
+        },
+        // Like MFT (MFT hehe), but with a single added condition
+        model::Kind::MultipleTF(answers) => {
+            let mut note = 0.;
+            
+            let itr = ssitr(answers, |a, b| a.0.cmp(b.0));
+            for (id, a) in itr {
+                // Check both true and false
+                let id_t = id.to_owned() + "T";
+                let t;
+                if let Some(v) = actual.get(&id_t) {
+                    t = Some(note_bin_answer(&id_t, &a.as_true(), v)?);
+                } else {
+                    t = None
+                }
 
-    let start = time::Instant::now();
+                let id_f = id.to_owned() + "F";
+                let f;
+                if let Some(v) = actual.get(&id_f) {
+                    f = Some(note_bin_answer(&id_f, &a.as_false(), v)?);
+                } else {
+                    f = None
+                }
 
-    let ct = data::read(PathBuf::from(args.positions))?;
+                // Check that either both or none of them were found AND that only one was ticked.
+                if f.is_some() && t.is_some() {
+                    let f = f.unwrap();
+                    let t = t.unwrap();
+                    if f.answered() ^ t.answered() {
+                        note += f.value() + t.value();
+                    } else {
+                        error!("TrueFalse question has {} detected as filled: {}", if t.answered() { "both answers" } else { "no answer" }, id);
+                        return None;
+                    }
+                } else if !(t.is_none() && f.is_none()) {
+                    error!("Could not find answer \"{}\" in TrueFalse element: {}.", if t.is_some() { "true" } else { "false" }, id);
+                    return None;
+                }
+            }
+            let note = note.clamp(model.min, model.max);
+            debug!("Note for question {}: {}", _q_id, note);
+            Some(note)
+        }
+    }
+}
+/// Notes a whole exercise.
+fn note_exercise(_ex_id: &String, model: &model::Exercise, actual: &HashMap<String, Answer>) -> Option<f64> {
+    let mut note = 0.;
+    let itr = ssitr(&model.q, |a, b| a.0.cmp(b.0));
+    for (id, q) in itr {
+        note += note_question(id, q, actual)?;
+    }
+    let note = note.clamp(model.min, model.max);
+    info!("Note for exercise {}: {}", _ex_id, note);
+    Some(note)
+}
+/// Notes the exam according to the model
+fn note_exam(model: &model::Model, answers: &HashMap<String, Answer>) -> Option<f64> {
+    let mut note = 0.;
+    
+    let itr = ssitr(&model.ex, |a, b| a.0.cmp(b.0));
+    for (id, e) in itr {
+        note += note_exercise(id, e, answers)?;
+    }
+    Some(note)
+}
 
+/*
+ * Meta functions *
+ they describe whole processes.
+*/
+
+/// Reads an image, and resolves the boxes according to the pointed content.
+fn resolve(image_file: &String, content: &Content_<f64>) -> Result<HashMap<String, Answer>> {
     // Get the image
-    let image = read_image(&args.image)?;
+    let image = read_image(image_file)?;
 
-    let res = standard_size(&image, &ct.metadata.size.cast())?;
+    let res = standard_size(&image, &content.metadata.size.cast())?;
     // Edge detection (find the little guys)
     /*let mut blurred = Mat::default();
     imgproc::gaussian_blur(&img, &mut blurred, core::Size::new(7, 7), 0., 0., core::BORDER_DEFAULT)?;
@@ -684,9 +850,9 @@ fn main() -> Result<()> {
 
     // Detect QR:
     //todo! threshold pour eviter d'avoir des pbs de transparance (eheh trans-parance)
-    let qr = check_qr(&image, res, &ct.qr_code.cast(), &ct.metadata)?;
+    let qr = check_qr(&image, res, &content.qr_code.cast(), &content.metadata)?;
 
-    let markers = detect_markers(&image, &qr, &ct.qr_code.cast(), &ct.pointers.cast().rescale(res))?;
+    let markers = detect_markers(&image, &qr, &content.qr_code.cast(), &content.pointers.cast().rescale(res))?;
 
     /*
     let size = Size_ { width: dotsize, height: dotsize };
@@ -723,10 +889,56 @@ fn main() -> Result<()> {
 
     // 👍👍👍
 
-    let resized = fix_image(&image, &ct.pointers.cast().rescale(res), &markers)?;
+    let resized = fix_image(&image, &content.pointers.cast().rescale(res), &markers)?;
 
-    resolve_boxes(&resized, &ct.questions, qr.1.page, res)?;
+    resolve_boxes(&resized, &content.questions, qr.1.page, res)
+}
+
+/// Notes the resolved content according to the model
+fn grade<T>(answers: &HashMap<String, Answer>, model: &model::Model, content_meta: &Metadata_<T>) -> Result<f64> {
+    if model.md.id != content_meta.id {
+        error!("Inconsitent exam id between the model and the position files. Are you sure you have the right files?");
+        return Err(opencv::Error::new(core::StsBadArg, "Inconsistent exam id."));
+    }
+    if model.md.hash != content_meta.hash {
+        error!("Inconsitent exam hash between the model and the position files. Are you sure your files are from the same compilation?");
+        warn!("This error can be recovered from manually! Try to cross-reference your JSON files!");
+        return Err(opencv::Error::new(core::StsBadArg, "Inconsistent exam hash."));
+    }
+
+    note_exam(model, answers)
+        .ok_or(opencv::Error::new(core::StsParseError, "Answer parsing failed."))
+}
+
+fn main() -> Result<()> {
+    // Activate the logger (the default lever should not be higher than warn, as warnings should not be disregarded)
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
+
+    let args = cli::Cli::parse();
+
+    // Start opencl
+    boot_cl()?;
+
+    let start = time::Instant::now();
+
+    let ct: Content_<f64> = data::read_content(PathBuf::from(args.positions))?;
+
+    // Run resolve for each image, accumulate the answers.
+    let mut answers = HashMap::new();
+    let mut i = 0;
+    for image in args.images {
+        info!("Processing image #{}", i);
+        answers.extend(resolve(&image, &ct)?);
+        i+=1;
+    }
+    info!("Processing finished, now grading.");
+
+    let model = data::read_model(PathBuf::from(args.model))?;
+
+    let note = grade(&answers, &model, &ct.metadata)?;
 
     info!("Done: {:#?}", start.elapsed());
+
+    print!("Note: {}\n", note);
     Ok(())
 }

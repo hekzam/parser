@@ -73,12 +73,14 @@ impl ShapeError {
     /// Tries to obtain a rectangle out of four points.
     pub fn as_ortho<T: Float>(value: &[Point_<T>; 4]) -> ShapeResult<OriRect2D<T>> {
         //trace!("{:?}", value);
-        //*1- Find the first diagonal
+        //? Disabled this code, as the points from the qr reader are always ordered.
+        /*
+        //1- Find the first diagonal
         let a = value[0].distance(&value[1]);
         let b = value[0].distance(&value[2]);
         let c = value[0].distance(&value[3]);
         // Now that we know how far [0] is from [1,2,3], we find the longest distance. From that we can deduce our points.
-        //*2- Order our points
+        //2- Order our points
         let (adj_a, adj_b, other);
         if a > b {
             if a > c {
@@ -100,7 +102,8 @@ impl ShapeError {
                 adj_a = value[1];
                 adj_b = value[2];
             }
-        }
+        } */
+
         // We find the two other points. A rect should be described with the points in anti-trigonometric (clockwise) order.
         //println!("{:?} {:?} {:?}", value[0], adj_a, other);
         //println!("{:?} {:?} {:?}", value[0], adj_b, other);
@@ -109,13 +112,14 @@ impl ShapeError {
         //println!(">>> {:?} {:?}", angl_a, angl_b);
         // One will be positive and the other negative!
         let ordered;
-        // Disabled code, the points returned by the QR finder are in the right order. Angle has been overhauled so we could maybe reenable this code?
+        ordered = value;
+        // Disabled code, the points returned by the QR finder are in the right order.
         /*if angl_a > angl_b {
             ordered = [value[0], adj_a, other, adj_b];
         } else {
             ordered = [value[0], adj_b, other, adj_a];
         }*/
-        ordered = [value[0], adj_a, other, adj_b];
+        //ordered = [value[0], adj_a, other, adj_b];
         // We can now reorder our points
 
         //*3- Calculate rect's parameters rotation

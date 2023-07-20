@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use crate::utils::*;
-use super::structs::*;
+use super::structs::content;
 
 
-impl From<Rectangle> for Rect_<f64> {
-    fn from(value: Rectangle) -> Self {
+impl From<content::Rectangle> for Rect_<f64> {
+    fn from(value: content::Rectangle) -> Self {
         Rect_ {
             x: value.x,
             y: value.y,
@@ -14,16 +14,16 @@ impl From<Rectangle> for Rect_<f64> {
         }
     }
 }
-impl From<Position> for Point_<f64> {
-    fn from(value: Position) -> Self {
+impl From<content::Position> for Point_<f64> {
+    fn from(value: content::Position) -> Self {
         Point_ {
             x: value.x,
             y: value.y
         }
     }
 }
-impl From<Markers> for Pointers<f64> {
-    fn from(value: Markers) -> Self {
+impl From<content::Markers> for Pointers<f64> {
+    fn from(value: content::Markers) -> Self {
         Pointers {
             diameter: value.d,
             master: value.m.into(),
@@ -32,8 +32,8 @@ impl From<Markers> for Pointers<f64> {
         }
     }
 }
-impl From<Question> for Question_<f64> {
-    fn from(value: Question) -> Self {
+impl From<content::Question> for Question_<f64> {
+    fn from(value: content::Question) -> Self {
         Question_ {
             kind: value.t,
             page: value.p,
@@ -41,8 +41,8 @@ impl From<Question> for Question_<f64> {
         }
     }
 }
-impl From<Meta> for Metadata_<f64> {
-    fn from(value: Meta) -> Self {
+impl From<content::Meta> for Metadata_<f64> {
+    fn from(value: content::Meta) -> Self {
         Metadata_ {
             id: value.id,
             hash: value.hash,
@@ -51,8 +51,8 @@ impl From<Meta> for Metadata_<f64> {
         }
     }
 }
-impl From<Content> for Content_<f64> {
-    fn from(value: Content) -> Self {
+impl From<content::Content> for Content_<f64> {
+    fn from(value: content::Content) -> Self {
         Content_{
             questions: HashMap::from_iter(value.q.into_iter().map(|(s,q)| (s,q.into()))),
             pointers: value.mk.into(),

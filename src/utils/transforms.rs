@@ -239,7 +239,7 @@ impl<T: Float> Sizable for Size_<T> {
     }
     fn as_scale(&self, other: &Self) -> Result<Self::Scaler> {
         ShapeError::try_lin_scale(self.width / other.width, self.height / other.height)
-            .map_err(|_| opencv::Error::new(opencv::core::StsParseError, ""))
+            .map_err(|_| opencv::Error::new(opencv::core::StsParseError, "Scale is not linear."))
     }
 }
 impl<T: Float> Sizable<Size_<T>> for Rect_<T> {
