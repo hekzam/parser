@@ -72,7 +72,7 @@ fn boot_cl() -> Result<()> {
 
 /// Write an image only useful when tracing
 fn image_trace(img: &Mat, name: &str) -> Result<bool> {
-    const TRACE_FOLDER: &str = "reader/trace/";
+    const TRACE_FOLDER: &str = "parser/trace/";
     const TRACE_EXTENSION: &str = ".jpg";
 
     if log_enabled!(Level::Trace) {
