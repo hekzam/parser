@@ -21,6 +21,8 @@
             ];
             buildInputs = with pkgs; [
               opencv
+              zxing-cpp
+              nlohmann_json
             ];
             nativeBuildInputs = with pkgs; [
               meson
