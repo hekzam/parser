@@ -2,6 +2,8 @@
 #include <fstream>
 #include <stdio.h>
 #include <string.h>
+#include <cmath>
+#include <filesystem>
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -72,10 +74,10 @@ void differentiate_atomic_boxes(
   for (const auto & box : boxes) {
     max_page = std::max(max_page, box.page);
   }
-  user_boxes_per_page.resize(max_page - 1);
+  user_boxes_per_page.resize(max_page);
 
   for (AtomicBox & box : boxes) {
-    if (box.id.find("marker qrcode ") == 0) {
+    if (box.id.find("marker barcode ") == 0) {
       markers.emplace_back(&box);
     } else {
       user_boxes_per_page.at(box.page - 1).emplace_back(&box);
@@ -85,13 +87,13 @@ void differentiate_atomic_boxes(
   int corner_mask = 0;
   for (auto * box : markers) {
     int corner = -1;
-    if (box->id == "marker qrcode tl page1")
+    if (box->id == "marker barcode tl page1")
       corner = TOP_LEFT;
-    else if (box->id == "marker qrcode tr page1")
+    else if (box->id == "marker barcode tr page1")
       corner = TOP_RIGHT;
-    else if (box->id == "marker qrcode bl page1")
+    else if (box->id == "marker barcode bl page1")
       corner = BOTTOM_LEFT;
-    else if (box->id == "marker qrcode br page1")
+    else if (box->id == "marker barcode br page1")
       corner = BOTTOM_RIGHT;
 
     if (corner != -1) {
@@ -252,21 +254,29 @@ void detect_barcodes(cv::Mat img, std::vector<DetectedBarcode> & barcodes) {
 }
 
 int main(int argc, char *argv[]) {
-  if (argc < 3) {
-    fprintf(stderr, "usage: parser ATOMIC_BOXES IMAGE...\n");
+  if (argc < 4) {
+    fprintf(stderr, "usage: parser OUTPUT_DIR ATOMIC_BOXES IMAGE...\n");
     return 1;
   }
 
-  std::ifstream atomic_boxes_file(argv[1]);
+  // create output directory if needed
+  std::filesystem::path output_dir{argv[1]};
+  std::filesystem::create_directories(output_dir);
+
+  std::filesystem::path subimg_output_dir = output_dir.string() + std::string("/subimg");
+  std::filesystem::create_directories(subimg_output_dir);
+
+  // read atomic boxes info
+  std::ifstream atomic_boxes_file(argv[2]);
   if (!atomic_boxes_file.is_open()) {
-    fprintf(stderr, "could not open file '%s'\n", argv[1]);
+    fprintf(stderr, "could not open file '%s'\n", argv[2]);
     return 1;
   }
   json atomic_boxes_json;
   try {
     atomic_boxes_json = json::parse(atomic_boxes_file);
   } catch (const json::exception & e) {
-    fprintf(stderr, "could not json parse file '%s': %s", argv[1], e.what());
+    fprintf(stderr, "could not json parse file '%s': %s", argv[2], e.what());
     return 1;
   }
   //printf("atomic_boxes: %s\n", atomic_boxes_json.dump(2).c_str());
@@ -297,7 +307,7 @@ int main(int argc, char *argv[]) {
 
   const cv::Point2f src_img_size{210, 297}; // TODO: do not assume A4
 
-  for (int i = 2; i < argc; ++i) {
+  for (int i = 3; i < argc; ++i) {
     cv::Mat img = cv::imread(argv[i], cv::IMREAD_GRAYSCALE);
     const cv::Point2f dst_img_size(img.cols, img.rows);
     // TODO: use min and max for 90 ° rotate if needed
@@ -313,9 +323,11 @@ int main(int argc, char *argv[]) {
     std::vector<DetectedBarcode*> corner_barcodes;
     int found_corner_mask = identify_corner_barcodes(barcodes, expected_content_hash, corner_points, corner_barcodes);
 
+    // TODO: fix ugly code to read copy number and page number. assumes "hzbl,COPYNUMBER,PAGENUMBER"
     const char * bl_qrcode_str = corner_barcodes[BOTTOM_LEFT]->content.c_str();
-    int page = strtol(bl_qrcode_str + 6, NULL, 10); // TODO: check & less ugly ; hzblXXYY
-    printf("page: %d\n", page);
+    char * parse_ptr = nullptr;
+    int copy = strtol(bl_qrcode_str + 5, &parse_ptr, 10);
+    int page = strtol(parse_ptr + 1, NULL, 10);
 
     cv::Mat affine_transform;
     get_affine_transform(found_corner_mask, dst_corner_points, corner_points, affine_transform);
@@ -335,16 +347,67 @@ int main(int argc, char *argv[]) {
       };
       std::vector<cv::Point> raster_box;
       raster_box.reserve(4);
+      int min_x = INT_MAX;
+      int min_y = INT_MAX;
+      int max_x = INT_MIN;
+      int max_y = INT_MIN;
       for (int i = 0; i < 4; ++i) {
         auto scaled = coord_scale(vec_box[i], src_img_size, dst_img_size);
-        //printf("box %s corner %d: (%f, %f)\n", box->id.c_str(), i, scaled.x, scaled.y);
-        raster_box.emplace_back(cv::Point(scaled.x, scaled.y));
+
+        int x = round(scaled.x);
+        int y = round(scaled.y);
+        min_x = std::min(min_x, x);
+        max_x = std::max(max_x, x);
+        min_y = std::min(min_y, y);
+        max_y = std::max(max_y, y);
+
+        raster_box.emplace_back(cv::Point(x, y));
       };
+
+      // extract box content into file
+      cv::Range rows(min_y, max_y);
+      cv::Range cols(min_x, max_x);
+      //printf("%d,%s: (%d,%d) -> (%d,%d)\n", copy, box->id.c_str(), min_x, min_y, max_x, max_y);
+      cv::Mat subimg = calibrated_img(rows, cols);
+
+      char * output_img_fname = nullptr;
+      int nb = asprintf(&output_img_fname, "%s/subimg/raw-%d-%s.png", output_dir.c_str(), copy, box->id.c_str());
+      (void) nb;
+      printf("box fname: %s\n", output_img_fname);
+      cv::imwrite(output_img_fname, subimg);
+      free(output_img_fname);
+
+      // draw polylines on the output image file
       cv::polylines(calibrated_img_col, raster_box, true, cv::Scalar(0, 0, 255), 2);
     }
 
-    std::string output_filename = std::string("/tmp/cal-") + std::to_string(i) + std::string(".png");
-    cv::imwrite(output_filename, calibrated_img_col);
+    for (auto * box : corner_markers) {
+      if (strncmp("marker barcode br", box->id.c_str(), 17) == 0)
+        break;
+
+      const std::vector<cv::Point2f> vec_box = {
+        cv::Point2f{box->x, box->y},
+        cv::Point2f{box->x + box->width, box->y},
+        cv::Point2f{box->x + box->width, box->y + box->height},
+        cv::Point2f{box->x, box->y + box->height}
+      };
+      std::vector<cv::Point> raster_box;
+      raster_box.reserve(4);
+      for (int i = 0; i < 4; ++i) {
+        auto scaled = coord_scale(vec_box[i], src_img_size, dst_img_size);
+        //printf("box %s corner %d: (%f, %f)\n", box->id.c_str(), i, scaled.x, scaled.y);
+        raster_box.emplace_back(cv::Point(round(scaled.x), round(scaled.y)));
+      };
+      cv::polylines(calibrated_img_col, raster_box, true, cv::Scalar(255, 0, 0), 2);
+    }
+
+    std::filesystem::path input_img_path{argv[i]};
+    std::filesystem::path output_img_path_fname = input_img_path.filename().replace_extension(".png");
+    char * output_img_fname = nullptr;
+    int nb = asprintf(&output_img_fname, "%s/cal-%s", output_dir.c_str(), output_img_path_fname.c_str());
+    (void) nb;
+    cv::imwrite(output_img_fname, calibrated_img_col);
+    free(output_img_fname);
 
     /*cv::Mat with_markers;
     cv::cvtColor(img, with_markers, cv::COLOR_GRAY2BGR);
